@@ -6,6 +6,7 @@ websockets>=13.0
 watchdog>=5.0.0
 pyyaml>=6.0
 claude-agent-sdk>=0.1.49
+mcp>=1.26.0
 ptyprocess>=0.7.0
 httpx>=0.28.0
 tomli>=2.0.1; python_version < "3.11"

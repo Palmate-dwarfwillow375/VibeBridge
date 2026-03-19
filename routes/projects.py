@@ -321,13 +321,23 @@ async def clone_progress(
 
         async def _read_stream(stream):
             nonlocal last_error
+            pending = ""
             while True:
-                line = await stream.readline()
-                if not line:
+                chunk = await stream.read(64 * 1024)
+                if not chunk:
+                    tail = pending.strip()
+                    if tail:
+                        last_error = tail
                     break
-                msg = line.decode(errors="replace").strip()
-                if msg:
-                    last_error = msg
+
+                pending += chunk.decode(errors="replace")
+                parts = re.split(r"[\r\n]+", pending)
+                pending = parts.pop()
+
+                for part in parts:
+                    msg = part.strip()
+                    if msg:
+                        last_error = msg
 
         # Read both streams
         await asyncio.gather(

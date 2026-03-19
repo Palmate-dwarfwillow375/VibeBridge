@@ -16,11 +16,16 @@
 
 ## 概览
 
-`VibeBridge` 是一个多节点浏览器控制面，用来在一台或多台机器上运行 `Claude Code` 和 `Codex`。
+`VibeBridge` 是一个多节点浏览器控制面，用一个界面统一运行和管理一台或多台机器上的 `Claude Code` 与 `Codex`。
 
-- `main_server.py` 是唯一浏览器入口。
-- `app.py` 运行在各个节点上，负责本地文件、shell、Git 和 provider 执行。
-- 新建会话时只需要选择 `node + path + provider`，执行仍然落在真正拥有工作目录的机器上。
+## 聊天体验
+
+VibeBridge 的聊天界面不是把底层事件原样摊开，而是尽量让主消息流保持“答案优先”。
+
+- 每一轮对话都会突出最后一条正式回复，中间的工具调用、思考和 compact 过程会收进可折叠的过程区。
+- 没有明显中间过程的轮次不会出现空的过程容器，整体阅读会更干净。
+- 重新打开会话时，历史状态能更完整地恢复，包括 Codex 的 compact 历史。
+- Codex 会话对长输出的处理更稳定，整体使用感受会更接近 Codex app。
 
 ## 架构
 
@@ -159,6 +164,7 @@ VibeBridge/
 - 实现文件：`providers/codex_mcp.py`
 - 优先使用 `codex mcp-server`
 - MCP 初始化失败时会回退到 `codex exec --json`
+- 重载旧会话时可以恢复 compact 历史
 - 节点机器上需要可用的 `codex` CLI
 
 ## 验证方式

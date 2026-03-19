@@ -129,7 +129,10 @@ class OutboundConnector:
         print(f"[Main] Connecting to Node {node_id} at {url}")
 
         try:
-            ws = await asyncio.wait_for(websockets.connect(url), CONNECT_TIMEOUT)
+            ws = await asyncio.wait_for(
+                websockets.connect(url, max_size=None),
+                CONNECT_TIMEOUT,
+            )
             conn["ws"] = ws
 
             # Send HELLO

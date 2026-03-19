@@ -16,11 +16,16 @@
 
 ## Overview
 
-`VibeBridge` is a browser control plane for running `Claude Code` and `Codex` across one or more machines.
+`VibeBridge` is a browser control plane for running `Claude Code` and `Codex` across one or more machines from a single UI.
 
-- `main_server.py` is the only browser-facing entry.
-- `app.py` runs on each node and executes local filesystem, shell, Git, and provider work.
-- A session is created by choosing `node + path + provider`, so execution stays on the machine that owns the workspace.
+## Chat Experience
+
+VibeBridge keeps the chat UI answer-first instead of exposing every low-level event in the main message flow.
+
+- Each assistant turn highlights the final reply and keeps intermediate tool calls, thinking, and compact activity in a collapsible process panel.
+- Turns without meaningful intermediate activity stay visually clean instead of showing empty process containers.
+- Reopening a session restores the conversation state more faithfully, including Codex compact history.
+- Codex sessions handle long outputs more reliably, which makes extended runs feel closer to the Codex app experience.
 
 ## Architecture
 
@@ -159,6 +164,7 @@ Good starting points:
 - Implementation: `providers/codex_mcp.py`
 - Uses `codex mcp-server` first
 - Falls back to `codex exec --json` if MCP bootstrap fails
+- Restores compact history when older sessions are reloaded
 - Requires the `codex` CLI on the node machine
 
 ## Verification

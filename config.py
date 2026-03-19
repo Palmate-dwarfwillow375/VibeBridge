@@ -58,6 +58,7 @@ _COMMON_DEFAULTS: dict[str, Any] = {
         },
         "codex": {
             "tool_approval_timeout_ms": 55000,
+            "query_idle_timeout_ms": 0,
         },
     },
 }
@@ -234,4 +235,10 @@ CODEX_TOOL_APPROVAL_TIMEOUT_MS = _get_int(
     "codex",
     "tool_approval_timeout_ms",
     default=55000,
+)
+CODEX_QUERY_IDLE_TIMEOUT_MS = _get_int(
+    "providers",
+    "codex",
+    "query_idle_timeout_ms",
+    default=0,
 )

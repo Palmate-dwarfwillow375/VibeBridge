@@ -96,7 +96,7 @@ class ShellRelay:
                 buffered.append(raw)
 
                 try:
-                    node_ws = await websockets.connect(node_url)
+                    node_ws = await websockets.connect(node_url, max_size=None)
                 except Exception as e:
                     await browser_ws.send_json({
                         "type": "output",
