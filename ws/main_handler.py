@@ -36,8 +36,16 @@ from providers.codex_mcp import (
     is_codex_session_active,
     resolve_codex_approval,
     get_pending_codex_approvals_for_session,
+    reconnect_codex_session_writer,
 )
-from projects import get_projects, get_sessions, get_session_messages, get_codex_session_messages
+from projects import (
+    extract_project_directory,
+    get_codex_session_messages,
+    get_codex_sessions,
+    get_projects,
+    get_session_messages,
+    get_sessions,
+)
 
 AUTH_TIMEOUT = 10  # seconds
 
@@ -147,15 +155,24 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
             pass
 
     class ProxyWriter:
-        def __init__(self):
+        def __init__(self, send_func, event_request_id):
             self.session_id = None
             self.is_websocket_writer = True
+            self._send_func = send_func
+            self._request_id = event_request_id
 
         def send(self, data):
-            asyncio.create_task(_send(create_event(node_id, request_id, "chat", data)))
+            asyncio.create_task(self._send_func(create_event(node_id, self._request_id, "chat", data)))
 
-        def update_websocket(self, _):
-            pass
+        def update_websocket(self, new_target):
+            if not new_target:
+                return
+            send_func = getattr(new_target, "_send_func", None)
+            event_request_id = getattr(new_target, "_request_id", None)
+            if send_func is not None:
+                self._send_func = send_func
+            if event_request_id is not None:
+                self._request_id = event_request_id
 
         def set_session_id(self, sid):
             self.session_id = sid
@@ -163,7 +180,7 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
     try:
         if action == "chat.send":
             original_type = params.get("originalType") or params.get("type")
-            writer = ProxyWriter()
+            writer = ProxyWriter(_send, request_id)
             try:
                 if original_type == "claude-command":
                     await query_claude_sdk(params.get("command", ""), params.get("options", {}), writer)
@@ -182,11 +199,28 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
         elif action == "project.sessions":
             limit = params.get("limit")
             offset = params.get("offset")
-            sessions = await get_sessions(
-                params.get("projectName"),
-                5 if limit is None else limit,
-                0 if offset is None else offset,
-            )
+            provider = params.get("provider")
+            resolved_limit = 5 if limit is None else max(0, int(limit))
+            resolved_offset = 0 if offset is None else max(0, int(offset))
+
+            if provider == "codex":
+                project_name = params.get("projectName") or ""
+                project_path = params.get("projectPath") or await extract_project_directory(project_name)
+                all_sessions = await get_codex_sessions(project_path, 0)
+                paginated_sessions = all_sessions[resolved_offset: resolved_offset + resolved_limit]
+                sessions = {
+                    "sessions": paginated_sessions,
+                    "hasMore": (resolved_offset + len(paginated_sessions)) < len(all_sessions),
+                    "total": len(all_sessions),
+                    "offset": resolved_offset,
+                    "limit": resolved_limit,
+                }
+            else:
+                sessions = await get_sessions(
+                    params.get("projectName"),
+                    resolved_limit,
+                    resolved_offset,
+                )
             await _send(create_response(node_id, request_id, sessions))
 
         elif action == "project.sessionMessages":
@@ -243,10 +277,18 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
             await _send(create_response(node_id, request_id, {"success": True}))
 
         elif action == "session.reconnect":
-            if params.get("sessionId"):
-                writer = ProxyWriter()
-                reconnect_session_writer(params["sessionId"], writer)
-            await _send(create_response(node_id, request_id, {"success": True}))
+            sid = params.get("sessionId")
+            provider = params.get("provider")
+            success = False
+            if sid:
+                writer = ProxyWriter(_send, request_id)
+                if provider == "codex":
+                    success = reconnect_codex_session_writer(sid, writer)
+                elif provider == "claude":
+                    success = reconnect_session_writer(sid, writer)
+                else:
+                    success = reconnect_codex_session_writer(sid, writer) or reconnect_session_writer(sid, writer)
+            await _send(create_response(node_id, request_id, {"success": success}))
 
         elif action == "session.checkActive":
             sessions = {
@@ -260,8 +302,12 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
             sid = params.get("sessionId")
             if provider == "codex":
                 is_active = is_codex_session_active(sid)
+                if is_active:
+                    reconnect_codex_session_writer(sid, ProxyWriter(_send, request_id))
             else:
                 is_active = is_claude_session_active(sid)
+                if is_active:
+                    reconnect_session_writer(sid, ProxyWriter(_send, request_id))
             await _send(create_response(node_id, request_id, {
                 "type": "session-status",
                 "sessionId": sid,

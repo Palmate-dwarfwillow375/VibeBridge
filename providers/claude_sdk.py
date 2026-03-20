@@ -9,21 +9,19 @@ import json
 import os
 import re
 import shutil
-import tempfile
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from config import CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, CLAUDE_CONTEXT_WINDOW
 
 try:
     from claude_agent_sdk import (
+        ClaudeSDKClient,
         ClaudeAgentOptions as ClaudeSDKOptions,
         PermissionResultAllow,
         PermissionResultDeny,
-        PermissionUpdate,
-        query,
         AssistantMessage,
         UserMessage,
         SystemMessage,
@@ -33,11 +31,10 @@ except ImportError:
     # Backward-compatible fallback for older environments still on the
     # deprecated package name.
     from claude_code_sdk import (
+        ClaudeSDKClient,
         ClaudeCodeOptions as ClaudeSDKOptions,
         PermissionResultAllow,
         PermissionResultDeny,
-        PermissionUpdate,
-        query,
         AssistantMessage,
         UserMessage,
         SystemMessage,
@@ -60,6 +57,33 @@ CLAUDE_DEFAULT_MODEL = "sonnet"
 
 def _create_request_id() -> str:
     return str(uuid.uuid4())
+
+
+class ClaudeSessionWriter:
+    """Mutable writer proxy so an in-flight Claude turn can survive reconnects."""
+
+    def __init__(self, target: Any):
+        self._target = target
+        self.is_websocket_writer = True
+        self.session_id: str | None = None
+
+    def send(self, data: dict) -> None:
+        target = self._target
+        if target is None:
+            return
+        target.send(data)
+
+    def reconnect(self, new_target: Any) -> None:
+        self._target = new_target
+
+    def update_websocket(self, new_target: Any) -> None:
+        self.reconnect(new_target)
+
+    def set_session_id(self, session_id: str) -> None:
+        self.session_id = session_id
+
+    def get_session_id(self) -> str | None:
+        return self.session_id
 
 
 # ---------------------------------------------------------------------------
@@ -150,14 +174,27 @@ def _matches_tool_permission(entry: str, tool_name: str, tool_input: Any) -> boo
 # Session management
 # ---------------------------------------------------------------------------
 
-def add_session(session_id: str, *, abort_event: asyncio.Event, temp_paths=None, temp_dir=None, writer=None):
+def add_session(
+    session_id: str,
+    *,
+    abort_event: asyncio.Event,
+    temp_paths=None,
+    temp_dir=None,
+    writer=None,
+    client=None,
+    task: asyncio.Task | None = None,
+    done_event: asyncio.Event | None = None,
+):
     active_sessions[session_id] = {
         "abort_event": abort_event,
         "start_time": time.time(),
-        "status": "active",
+        "status": "running",
         "temp_paths": temp_paths or [],
         "temp_dir": temp_dir,
         "writer": writer,
+        "client": client,
+        "task": task,
+        "done_event": done_event,
     }
 
 
@@ -174,12 +211,12 @@ def get_all_sessions() -> list[str]:
 
 
 def get_active_claude_sessions() -> list[str]:
-    return [sid for sid, s in active_sessions.items() if s["status"] == "active"]
+    return [sid for sid, s in active_sessions.items() if s["status"] in {"running", "interrupting"}]
 
 
 def is_claude_session_active(session_id: str) -> bool:
     s = active_sessions.get(session_id)
-    return bool(s and s["status"] == "active")
+    return bool(s and s["status"] in {"running", "interrupting"})
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +449,11 @@ def _map_options(options: dict) -> ClaudeSDKOptions:
     if mcp:
         opts.mcp_servers = mcp
 
+    # Keep partial token deltas/events so the existing frontend streaming UI
+    # continues to render Claude output incrementally.
+    if hasattr(opts, "include_partial_messages"):
+        opts.include_partial_messages = True
+
     return opts
 
 
@@ -468,50 +510,56 @@ async def query_claude_sdk(command: str, options: dict, ws):
         options: Frontend options dict.
         ws: WebSocketWriter (has .send(dict) method).
     """
-    session_id = options.get("sessionId")
-    captured_session_id = session_id
+    requested_session_id = options.get("sessionId")
+    captured_session_id = requested_session_id
     session_created_sent = False
     temp_paths: list[str] = []
     temp_dir: str | None = None
     abort_event = asyncio.Event()
+    turn_done_event = asyncio.Event()
+    client: ClaudeSDKClient | None = None
+    session_writer = ws if isinstance(ws, ClaudeSessionWriter) else ClaudeSessionWriter(ws)
 
     try:
-        # Build SDK options
         sdk_opts = _map_options(options)
-
-        # Handle images
         final_command, temp_paths, temp_dir = await _handle_images(
             command, options.get("images"), options.get("cwd")
         )
 
-        # Build canUseTool callback
         allowed_tools = list(sdk_opts.allowed_tools or [])
         disallowed_tools = list(sdk_opts.disallowed_tools or [])
 
         async def can_use_tool(tool_name: str, tool_input: dict, context) -> Any:
             nonlocal allowed_tools, disallowed_tools
 
+            current_session_id = captured_session_id or requested_session_id
             requires_interaction = tool_name in TOOLS_REQUIRING_INTERACTION
 
             if not requires_interaction:
                 if sdk_opts.permission_mode == "bypassPermissions":
                     return PermissionResultAllow(updated_input=tool_input)
 
-                is_disallowed = any(_matches_tool_permission(e, tool_name, tool_input) for e in disallowed_tools)
+                is_disallowed = any(
+                    _matches_tool_permission(entry, tool_name, tool_input)
+                    for entry in disallowed_tools
+                )
                 if is_disallowed:
                     return PermissionResultDeny(message="Tool disallowed by settings")
 
-                is_allowed = any(_matches_tool_permission(e, tool_name, tool_input) for e in allowed_tools)
+                is_allowed = any(
+                    _matches_tool_permission(entry, tool_name, tool_input)
+                    for entry in allowed_tools
+                )
                 if is_allowed:
                     return PermissionResultAllow(updated_input=tool_input)
 
             request_id = _create_request_id()
-            ws.send({
+            session_writer.send({
                 "type": "claude-permission-request",
                 "requestId": request_id,
                 "toolName": tool_name,
                 "input": tool_input,
-                "sessionId": captured_session_id or session_id,
+                "sessionId": current_session_id,
             })
 
             timeout = 0 if requires_interaction else TOOL_APPROVAL_TIMEOUT
@@ -520,30 +568,29 @@ async def query_claude_sdk(command: str, options: dict, ws):
                 timeout=timeout,
                 signal_event=abort_event,
                 metadata={
-                    "_sessionId": captured_session_id or session_id,
+                    "_sessionId": current_session_id,
                     "_toolName": tool_name,
                     "_input": tool_input,
                     "_receivedAt": time.time(),
                 },
-                on_cancel=lambda reason: ws.send({
+                on_cancel=lambda reason: session_writer.send({
                     "type": "claude-permission-cancelled",
                     "requestId": request_id,
                     "reason": reason,
-                    "sessionId": captured_session_id or session_id,
+                    "sessionId": current_session_id,
                 }),
             )
 
             if not decision:
                 return PermissionResultDeny(message="Permission request timed out")
             if decision.get("cancelled"):
-                return PermissionResultDeny(message="Permission request cancelled")
+                return PermissionResultDeny(message="Permission request cancelled", interrupt=True)
             if decision.get("allow"):
-                # Remember tool if requested
                 remember_entry = decision.get("rememberEntry")
                 if remember_entry and isinstance(remember_entry, str):
                     if remember_entry not in allowed_tools:
                         allowed_tools.append(remember_entry)
-                    disallowed_tools = [e for e in disallowed_tools if e != remember_entry]
+                    disallowed_tools = [entry for entry in disallowed_tools if entry != remember_entry]
                 return PermissionResultAllow(
                     updated_input=decision.get("updatedInput") or tool_input
                 )
@@ -551,76 +598,121 @@ async def query_claude_sdk(command: str, options: dict, ws):
             return PermissionResultDeny(message=decision.get("message", "User denied tool use"))
 
         sdk_opts.can_use_tool = can_use_tool
+        client = ClaudeSDKClient(sdk_opts)
+        await client.connect()
 
-        # Track session
         if captured_session_id:
-            add_session(captured_session_id, abort_event=abort_event,
-                        temp_paths=temp_paths, temp_dir=temp_dir, writer=ws)
+            add_session(
+                captured_session_id,
+                abort_event=abort_event,
+                temp_paths=temp_paths,
+                temp_dir=temp_dir,
+                writer=session_writer,
+                client=client,
+                task=asyncio.current_task(),
+                done_event=turn_done_event,
+            )
+            session_writer.set_session_id(captured_session_id)
 
-        # Execute streaming query
-        print(f"[Claude SDK] Starting query, session={captured_session_id or 'NEW'}, model={sdk_opts.model}")
+        print(
+            f"[Claude SDK] Starting query, session={captured_session_id or 'NEW'}, model={sdk_opts.model}"
+        )
 
-        prompt_input = _single_prompt_stream(final_command, session_id)
+        prompt_input = _single_prompt_stream(final_command, requested_session_id)
+        await client.query(prompt_input, session_id=requested_session_id or "")
 
-        async for message in query(prompt=prompt_input, options=sdk_opts):
-            # Capture session_id from init system messages, stream events, or results.
+        async for message in client.receive_response():
             msg_session_id = _extract_message_session_id(message)
-            if msg_session_id and not captured_session_id:
-                captured_session_id = msg_session_id
-                add_session(captured_session_id, abort_event=abort_event,
-                            temp_paths=temp_paths, temp_dir=temp_dir, writer=ws)
+            if msg_session_id:
+                session_writer.set_session_id(msg_session_id)
+                if not captured_session_id:
+                    captured_session_id = msg_session_id
+                    add_session(
+                        captured_session_id,
+                        abort_event=abort_event,
+                        temp_paths=temp_paths,
+                        temp_dir=temp_dir,
+                        writer=session_writer,
+                        client=client,
+                        task=asyncio.current_task(),
+                        done_event=turn_done_event,
+                    )
 
-                if hasattr(ws, "set_session_id"):
-                    ws.set_session_id(captured_session_id)
+                    if not requested_session_id and not session_created_sent:
+                        session_created_sent = True
+                        session_writer.send({
+                            "type": "session-created",
+                            "sessionId": captured_session_id,
+                        })
 
-                if not session_id and not session_created_sent:
-                    session_created_sent = True
-                    ws.send({"type": "session-created", "sessionId": captured_session_id})
-
-            # Transform and send
             transformed = _msg_to_dict(message)
             if getattr(message, "parent_tool_use_id", None):
                 transformed["parentToolUseId"] = message.parent_tool_use_id
 
-            ws.send({
+            session_writer.send({
                 "type": "claude-response",
                 "data": transformed,
-                "sessionId": captured_session_id or session_id,
+                "sessionId": captured_session_id or requested_session_id,
             })
 
-            # Token budget from result
             if isinstance(message, ResultMessage):
                 budget = _extract_token_budget(message)
                 if budget:
-                    ws.send({
+                    session_writer.send({
                         "type": "token-budget",
                         "data": budget,
-                        "sessionId": captured_session_id or session_id,
+                        "sessionId": captured_session_id or requested_session_id,
                     })
 
-        # Cleanup
+        session = get_session(captured_session_id) if captured_session_id else None
+        was_interrupted = bool(session and session.get("status") in {"interrupting", "aborted"})
+        if session and was_interrupted:
+            session["status"] = "aborted"
+
         if captured_session_id:
             remove_session(captured_session_id)
         await _cleanup_temp_files(temp_paths, temp_dir)
 
-        ws.send({
+        if was_interrupted:
+            print(f"[Claude SDK] Interrupted, session={captured_session_id}")
+            return
+
+        session_writer.send({
             "type": "claude-complete",
             "sessionId": captured_session_id,
             "exitCode": 0,
-            "isNewSession": not session_id and bool(command),
+            "isNewSession": not requested_session_id and bool(command),
         })
         print(f"[Claude SDK] Complete, session={captured_session_id}")
 
+    except asyncio.CancelledError:
+        session = get_session(captured_session_id) if captured_session_id else None
+        was_interrupted = bool(session and session.get("status") in {"interrupting", "aborted"})
+        if captured_session_id:
+            remove_session(captured_session_id)
+        await _cleanup_temp_files(temp_paths, temp_dir)
+        if not was_interrupted:
+            raise
     except Exception as e:
+        session = get_session(captured_session_id) if captured_session_id else None
+        was_interrupted = bool(session and session.get("status") in {"interrupting", "aborted"})
         print(f"[Claude SDK] Error: {e}")
         if captured_session_id:
             remove_session(captured_session_id)
         await _cleanup_temp_files(temp_paths, temp_dir)
-        ws.send({
-            "type": "claude-error",
-            "error": str(e),
-            "sessionId": captured_session_id or session_id,
-        })
+        if not was_interrupted:
+            session_writer.send({
+                "type": "claude-error",
+                "error": str(e),
+                "sessionId": captured_session_id or requested_session_id,
+            })
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        turn_done_event.set()
 
 
 async def abort_claude_session(session_id: str) -> bool:
@@ -630,9 +722,22 @@ async def abort_claude_session(session_id: str) -> bool:
         return False
     try:
         session["abort_event"].set()
-        session["status"] = "aborted"
-        await _cleanup_temp_files(session.get("temp_paths", []), session.get("temp_dir"))
-        remove_session(session_id)
+        session["status"] = "interrupting"
+
+        client = session.get("client")
+        if client is not None:
+            try:
+                await client.interrupt()
+            except Exception as exc:
+                print(f"[Claude SDK] Interrupt request failed for {session_id}: {exc}")
+
+        done_event = session.get("done_event")
+        if isinstance(done_event, asyncio.Event):
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                print(f"[Claude SDK] Interrupt timed out for {session_id}")
+                return False
         return True
     except Exception as e:
         print(f"[Claude SDK] Error aborting {session_id}: {e}")
@@ -654,13 +759,28 @@ def get_pending_approvals_for_session(session_id: str) -> list[dict]:
     return pending
 
 
-def reconnect_session_writer(session_id: str, new_ws) -> bool:
-    """Reconnect a session's writer to a new WebSocket."""
+def reconnect_session_writer(session_id: str, new_writer) -> bool:
+    """Retarget an active Claude session to a fresh writer after reconnect."""
     session = get_session(session_id)
-    if not session or not session.get("writer"):
+    if not session:
         return False
-    if hasattr(session["writer"], "update_websocket"):
-        session["writer"].update_websocket(new_ws)
-        print(f"[Claude SDK] Writer swapped for session {session_id}")
+
+    writer = session.get("writer")
+    if isinstance(writer, ClaudeSessionWriter):
+        writer.reconnect(new_writer)
         return True
-    return False
+
+    if writer and hasattr(writer, "update_websocket"):
+        try:
+            writer.update_websocket(new_writer)
+            session["writer"] = writer
+            print(f"[Claude SDK] Writer swapped for session {session_id}")
+            return True
+        except Exception:
+            pass
+
+    if new_writer is None:
+        return False
+
+    session["writer"] = new_writer
+    return True

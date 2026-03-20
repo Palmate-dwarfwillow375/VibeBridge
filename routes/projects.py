@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from middleware.auth import authenticate_token
-from database.db import session_names_db
+from database.db import apply_custom_session_names, session_names_db
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -147,15 +147,31 @@ async def create_project(request: Request, _=Depends(authenticate_token)):
 
 
 @router.get("/{project_name}/sessions")
-async def list_sessions(project_name: str, limit: int = 5, offset: int = 0, _=Depends(authenticate_token)):
-    from projects import get_sessions
+async def list_sessions(
+    project_name: str,
+    limit: int = 5,
+    offset: int = 0,
+    provider: str = "claude",
+    _=Depends(authenticate_token),
+):
+    from projects import extract_project_directory, get_codex_sessions, get_sessions
     try:
-        result = await get_sessions(project_name, limit, offset)
-        # Apply custom session names
-        for s in result.get("sessions", []):
-            custom = session_names_db.get_name(s.get("sessionId", ""), "claude")
-            if custom:
-                s["summary"] = custom
+        normalized_provider = "codex" if provider == "codex" else "claude"
+        if normalized_provider == "codex":
+            project_path = await extract_project_directory(project_name)
+            all_sessions = await get_codex_sessions(project_path, 0)
+            paginated_sessions = all_sessions[offset: offset + limit]
+            apply_custom_session_names(paginated_sessions, "codex")
+            result = {
+                "sessions": paginated_sessions,
+                "hasMore": (offset + len(paginated_sessions)) < len(all_sessions),
+                "total": len(all_sessions),
+                "offset": offset,
+                "limit": limit,
+            }
+        else:
+            result = await get_sessions(project_name, limit, offset)
+            apply_custom_session_names(result.get("sessions", []), "claude")
         return result
     except Exception as e:
         raise HTTPException(500, str(e))

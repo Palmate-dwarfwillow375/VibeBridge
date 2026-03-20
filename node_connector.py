@@ -60,7 +60,7 @@ class NodeConnector:
         print(f"[Node] Connecting to Main Server: {self.main_server_url}")
 
         try:
-            self.ws = await websockets.connect(self.main_server_url)
+            self.ws = await websockets.connect(self.main_server_url, max_size=None)
             self.reconnect_delay = INITIAL_RECONNECT_DELAY
 
             # Send REGISTER
@@ -181,11 +181,28 @@ class NodeConnector:
             elif action == NODE_ACTIONS["PROJECT_SESSIONS"]:
                 limit = params.get("limit")
                 offset = params.get("offset")
-                data = await h["get_sessions"](
-                    params.get("projectName"),
-                    5 if limit is None else limit,
-                    0 if offset is None else offset,
-                )
+                provider = params.get("provider")
+                resolved_limit = 5 if limit is None else max(0, int(limit))
+                resolved_offset = 0 if offset is None else max(0, int(offset))
+
+                if provider == "codex" and "get_codex_sessions" in h and "extract_project_directory" in h:
+                    project_name = params.get("projectName") or ""
+                    project_path = params.get("projectPath") or await h["extract_project_directory"](project_name)
+                    all_sessions = await h["get_codex_sessions"](project_path, 0)
+                    paginated_sessions = all_sessions[resolved_offset: resolved_offset + resolved_limit]
+                    data = {
+                        "sessions": paginated_sessions,
+                        "hasMore": (resolved_offset + len(paginated_sessions)) < len(all_sessions),
+                        "total": len(all_sessions),
+                        "offset": resolved_offset,
+                        "limit": resolved_limit,
+                    }
+                else:
+                    data = await h["get_sessions"](
+                        params.get("projectName"),
+                        resolved_limit,
+                        resolved_offset,
+                    )
                 await self._send(create_response(self.node_id, request_id, data))
 
             elif action == NODE_ACTIONS["PROJECT_SESSION_MESSAGES"]:

@@ -6,6 +6,7 @@ claude-permission-response, codex-permission-response,
 check-session-status, get-pending-permissions,
 get-active-sessions.
 """
+import asyncio
 import json
 import traceback
 
@@ -27,6 +28,7 @@ from providers.codex_mcp import (
     get_active_codex_sessions,
     resolve_codex_approval,
     get_pending_codex_approvals_for_session,
+    reconnect_codex_session_writer,
 )
 
 
@@ -85,6 +87,18 @@ async def handle_chat_connection(ws: WebSocket):
     writer = WebSocketWriter(ws)
     print("[Chat] WebSocket connected")
 
+    def _run_provider(coro):
+        task = asyncio.create_task(coro)
+
+        def _report_failure(done_task: asyncio.Task):
+            try:
+                done_task.result()
+            except Exception as exc:
+                print(f"[Chat] Provider task failed: {exc}")
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+        task.add_done_callback(_report_failure)
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -98,19 +112,19 @@ async def handle_chat_connection(ws: WebSocket):
             try:
                 if msg_type == "claude-command":
                     print(f"[Chat] Claude command, session={'Resume' if data.get('options', {}).get('sessionId') else 'New'}")
-                    await query_claude_sdk(
+                    _run_provider(query_claude_sdk(
                         data.get("command", ""),
                         data.get("options", {}),
                         writer,
-                    )
+                    ))
 
                 elif msg_type == "codex-command":
                     print(f"[Chat] Codex command, session={'Resume' if data.get('options', {}).get('sessionId') else 'New'}")
-                    await query_codex(
+                    _run_provider(query_codex(
                         data.get("command", ""),
                         data.get("options", {}),
                         writer,
-                    )
+                    ))
 
                 elif msg_type == "abort-session":
                     sid = data.get("sessionId")
@@ -155,16 +169,34 @@ async def handle_chat_connection(ws: WebSocket):
 
                     if provider == "codex":
                         is_active = is_codex_session_active(sid)
+                        if is_active:
+                            reconnect_codex_session_writer(sid, writer)
                     else:
                         is_active = is_claude_session_active(sid)
                         if is_active:
-                            reconnect_session_writer(sid, ws)
+                            reconnect_session_writer(sid, writer)
 
                     writer.send({
                         "type": "session-status",
                         "sessionId": sid,
                         "provider": provider,
                         "isProcessing": is_active,
+                    })
+
+                elif msg_type == "reconnect-session":
+                    provider = data.get("provider", "claude")
+                    sid = data.get("sessionId")
+
+                    if provider == "codex":
+                        success = reconnect_codex_session_writer(sid, writer)
+                    else:
+                        success = reconnect_session_writer(sid, writer)
+
+                    writer.send({
+                        "type": "session-reconnected",
+                        "sessionId": sid,
+                        "provider": provider,
+                        "success": success,
                     })
 
                 elif msg_type == "get-pending-permissions":

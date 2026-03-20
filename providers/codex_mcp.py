@@ -21,24 +21,30 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 
 from pydantic import RootModel
-from config import CODEX_TOOL_APPROVAL_TIMEOUT_MS
+from config import CODEX_QUERY_IDLE_TIMEOUT_MS, CODEX_TOOL_APPROVAL_TIMEOUT_MS
+from utils.codex_session_index import sync_codex_session_index_entry
+from utils.codex_token_usage import extract_codex_token_budget
 
 try:
+    import anyio
+    import anyio.lowlevel
     import mcp.types as mcp_types
-    from mcp import ClientSession, StdioServerParameters, stdio_client
+    from mcp import ClientSession, StdioServerParameters
     from mcp.shared.context import RequestContext
     from mcp.shared.message import SessionMessage
 except ImportError:  # pragma: no cover - fallback path covers missing MCP lib
+    anyio = None
     mcp_types = None
     ClientSession = None
     StdioServerParameters = None
-    stdio_client = None
     RequestContext = None
     SessionMessage = None
 
@@ -51,10 +57,49 @@ active_codex_sessions: dict[str, dict[str, Any]] = {}
 pending_codex_approvals: dict[str, dict[str, Any]] = {}
 
 CODEX_TOOL_APPROVAL_TIMEOUT = CODEX_TOOL_APPROVAL_TIMEOUT_MS / 1000
+CODEX_QUERY_IDLE_TIMEOUT = (
+    CODEX_QUERY_IDLE_TIMEOUT_MS / 1000 if CODEX_QUERY_IDLE_TIMEOUT_MS > 0 else None
+)
+
+
+class CodexSessionWriter:
+    """Mutable writer proxy so an in-flight Codex turn can survive reconnects."""
+
+    def __init__(self, target: Any):
+        self._target = target
+        self.is_websocket_writer = True
+
+    def send(self, data: dict) -> None:
+        target = self._target
+        if target is None:
+            return
+        target.send(data)
+
+    def reconnect(self, new_target: Any) -> None:
+        self._target = new_target
+
+    @property
+    def target(self) -> Any:
+        return self._target
 
 
 def _create_request_id() -> str:
     return str(uuid.uuid4())
+
+
+def _sync_codex_history_index(session_id: str | None, fallback_name: str | None) -> None:
+    """Best-effort sync into Codex's session_index.jsonl."""
+    if not session_id:
+        return
+
+    try:
+        sync_codex_session_index_entry(
+            session_id,
+            fallback_name=fallback_name,
+            prefer_existing_name=True,
+        )
+    except Exception as exc:
+        print(f"[Codex] Failed to sync session index for {session_id}: {exc}")
 
 
 def _move_active_session(old_session_id: str, new_session_id: str) -> None:
@@ -74,6 +119,7 @@ def _add_active_session(
     provider: str,
     task: asyncio.Task | None = None,
     proc: asyncio.subprocess.Process | None = None,
+    writer: Any | None = None,
 ) -> None:
     active_codex_sessions[session_id] = {
         "status": "running",
@@ -82,6 +128,7 @@ def _add_active_session(
         "started_at": time.time(),
         "task": task,
         "proc": proc,
+        "writer": writer,
     }
 
 
@@ -101,6 +148,32 @@ def _mark_active_session_completed(session_id: str) -> None:
     session = active_codex_sessions.get(session_id)
     if session and session.get("status") != "aborted":
         session["status"] = "completed"
+
+
+def reconnect_codex_session_writer(session_id: str, new_writer: Any) -> bool:
+    """Retarget an active Codex session to a fresh writer after reconnect."""
+    session = active_codex_sessions.get(session_id)
+    if not session:
+        return False
+
+    writer = session.get("writer")
+    if isinstance(writer, CodexSessionWriter):
+        writer.reconnect(new_writer)
+        return True
+
+    if writer and hasattr(writer, "update_websocket"):
+        try:
+            writer.update_websocket(new_writer)
+            session["writer"] = writer
+            return True
+        except Exception:
+            pass
+
+    if new_writer is None:
+        return False
+
+    session["writer"] = new_writer
+    return True
 
 
 async def wait_for_codex_approval(
@@ -238,9 +311,132 @@ if mcp_types is not None:
                     return
 
                 await responder.respond(mcp_types.ElicitResult.model_validate(response))
+
+    @asynccontextmanager
+    async def _safe_stdio_client(server: StdioServerParameters):
+        """Spawn an MCP server over stdio without relying on line-limited readers.
+
+        Some MCP client implementations have historically consumed stdio with
+        `readline()`-style APIs, which can raise `LimitOverrunError` on large
+        JSON-RPC notifications. Codex can emit very large single-line events
+        when command output is aggregated, so we own the transport here and
+        reuse `_iter_stream_lines()` to keep the stream safe across environments.
+        """
+        read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+        write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+
+        proc = await asyncio.create_subprocess_exec(
+            server.command,
+            *server.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=server.cwd,
+            env=server.env,
+        )
+
+        async def _stdout_reader() -> None:
+            assert proc.stdout, "Opened process is missing stdout"
+            try:
+                async with read_stream_writer:
+                    async for raw_line in _iter_stream_lines(proc.stdout):
+                        line = raw_line.decode(
+                            server.encoding,
+                            errors=server.encoding_error_handler,
+                        ).rstrip("\r\n")
+                        if not line:
+                            continue
+
+                        try:
+                            message = mcp_types.JSONRPCMessage.model_validate_json(line)
+                        except Exception as exc:
+                            print(f"[Codex MCP] Failed to parse JSON-RPC message: {exc}")
+                            await read_stream_writer.send(exc)
+                            continue
+
+                        await read_stream_writer.send(SessionMessage(message))
+            except anyio.ClosedResourceError:  # pragma: no cover
+                await anyio.lowlevel.checkpoint()
+
+        async def _stdin_writer() -> None:
+            assert proc.stdin, "Opened process is missing stdin"
+            try:
+                async with write_stream_reader:
+                    async for session_message in write_stream_reader:
+                        payload = session_message.message.model_dump_json(
+                            by_alias=True,
+                            exclude_none=True,
+                        )
+                        proc.stdin.write(
+                            (payload + "\n").encode(
+                                server.encoding,
+                                errors=server.encoding_error_handler,
+                            )
+                        )
+                        await proc.stdin.drain()
+            except anyio.ClosedResourceError:  # pragma: no cover
+                await anyio.lowlevel.checkpoint()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        async def _stderr_reader() -> None:
+            assert proc.stderr, "Opened process is missing stderr"
+            try:
+                async for raw_line in _iter_stream_lines(proc.stderr):
+                    text = raw_line.decode(
+                        server.encoding,
+                        errors=server.encoding_error_handler,
+                    ).rstrip("\r\n")
+                    if text:
+                        print(f"[Codex MCP] stderr: {text}", file=sys.stderr)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
+        stdout_task = asyncio.create_task(_stdout_reader())
+        stdin_task = asyncio.create_task(_stdin_writer())
+        stderr_task = asyncio.create_task(_stderr_reader())
+
+        try:
+            yield read_stream, write_stream
+        finally:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                    await proc.stdin.wait_closed()
+                except Exception:
+                    pass
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    await proc.wait()
+
+            await read_stream.aclose()
+            await write_stream.aclose()
+            await read_stream_writer.aclose()
+            await write_stream_reader.aclose()
+
+            for task in (stdout_task, stdin_task, stderr_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stdout_task, stdin_task, stderr_task, return_exceptions=True)
 else:  # pragma: no cover - only used when MCP isn't installed
     CodexServerNotification = None
     CodexClientSession = None
+    _safe_stdio_client = None
 
 
 class CodexMcpBootstrapError(RuntimeError):
@@ -324,12 +520,84 @@ def _extract_thread_id(event: dict[str, Any], meta: dict[str, Any] | None = None
     )
 
 
+def _join_command_parts(command: Any) -> str | None:
+    if not isinstance(command, list):
+        return None
+
+    parts = [str(part) for part in command if part is not None]
+    if not parts:
+        return None
+
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+async def _iter_stream_lines(
+    stream: asyncio.StreamReader,
+    *,
+    chunk_size: int = 64 * 1024,
+    timeout: float | None = None,
+):
+    """Yield newline-delimited chunks without StreamReader's line-length limit."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
+    buffer = bytearray()
+
+    while True:
+        read_coro = stream.read(chunk_size)
+        chunk = await asyncio.wait_for(read_coro, timeout=timeout) if timeout is not None else await read_coro
+        if not chunk:
+            if buffer:
+                yield bytes(buffer)
+            break
+
+        buffer.extend(chunk)
+
+        while True:
+            newline_index = buffer.find(b"\n")
+            if newline_index < 0:
+                break
+
+            line = bytes(buffer[: newline_index + 1])
+            del buffer[: newline_index + 1]
+            yield line
+
+
 def _format_command(command: Any) -> str | None:
     if isinstance(command, str):
-        return command
-    if isinstance(command, list):
-        parts = [str(part) for part in command]
-        return " ".join(shlex.quote(part) for part in parts)
+        stripped = command.strip()
+        return stripped or None
+
+    joined_parts = _join_command_parts(command)
+    if joined_parts:
+        return joined_parts
+
+    if isinstance(command, dict):
+        for key in (
+            "command",
+            "cmd",
+            "raw",
+            "text",
+            "parsedCommand",
+            "parsed_command",
+            "parsed_cmd",
+            "argv",
+            "args",
+            "tokens",
+        ):
+            formatted = _format_command(command.get(key))
+            if formatted:
+                return formatted
+
+        program = _get_first_string(
+            command.get("program"),
+            command.get("executable"),
+            command.get("name"),
+        )
+        if program:
+            suffix = _format_command(command.get("arguments")) or _format_command(command.get("params"))
+            return f"{program} {suffix}".strip() if suffix else program
+
     return None
 
 
@@ -409,6 +677,106 @@ def _update_codex_session_id(state: dict[str, Any], session_id: str | None, ws) 
     _announce_session_if_needed(state, ws)
 
 
+def _get_codex_compaction_state(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    candidates = [
+        payload.get("type"),
+        payload.get("event"),
+        payload.get("status"),
+        payload.get("state"),
+        payload.get("subtype"),
+    ]
+
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+
+        normalized = candidate.strip().lower()
+        if normalized in {"compacting", "context_compacting", "pre_compact"}:
+            return "compacting"
+        if normalized in {"compacted", "context_compacted", "compact_boundary"}:
+            return "compacted"
+
+    return None
+
+
+def _extract_compaction_summary(payload: Any) -> str | None:
+    if isinstance(payload, str):
+        text = payload.strip()
+        return text or None
+
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("message", "summary", "content", "handoff"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+
+        if isinstance(value, list):
+            text_parts: list[str] = []
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    text_parts.append(item.strip())
+                    continue
+
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+
+            if text_parts:
+                return "\n".join(text_parts)
+
+    return None
+
+
+def _build_compaction_status_items(
+    state: dict[str, Any] | None,
+    *,
+    status: str,
+    summary: str | None = None,
+) -> list[dict[str, Any]]:
+    normalized_status = "compacting" if status == "compacting" else "compacted"
+    items: list[dict[str, Any]] = []
+
+    if normalized_status == "compacting":
+        if state is not None and state.get("compaction_in_progress"):
+            return []
+        if state is not None:
+            state["compaction_in_progress"] = True
+        return [{
+            "type": "item",
+            "itemType": "compaction_status",
+            "status": "compacting",
+        }]
+
+    if state is not None and not state.get("compaction_in_progress"):
+        items.append({
+            "type": "item",
+            "itemType": "compaction_status",
+            "status": "compacting",
+        })
+
+    compacted_item: dict[str, Any] = {
+        "type": "item",
+        "itemType": "compaction_status",
+        "status": "compacted",
+    }
+    if summary:
+        compacted_item["summary"] = summary
+    items.append(compacted_item)
+
+    if state is not None:
+        state["compaction_in_progress"] = False
+
+    return items
+
+
 def _transform_codex_mcp_event(event: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
     """Translate Codex MCP events into the frontend's existing event model."""
     event_type = event.get("type", "")
@@ -422,6 +790,14 @@ def _transform_codex_mcp_event(event: dict[str, Any], state: dict[str, Any]) -> 
     if event_type == "task_started":
         state["saw_final_agent_message"] = False
         return [{"type": "turn_started"}]
+
+    compaction_state = _get_codex_compaction_state(event)
+    if compaction_state:
+        return _build_compaction_status_items(
+            state,
+            status=compaction_state,
+            summary=_extract_compaction_summary(event),
+        )
 
     if event_type == "agent_message":
         message = event.get("message")
@@ -454,10 +830,19 @@ def _transform_codex_mcp_event(event: dict[str, Any], state: dict[str, Any]) -> 
         }]
 
     if event_type == "exec_command_end":
+        command_text = (
+            _format_command(event.get("command"))
+            or _format_command(event.get("parsedCommand"))
+            or _format_command(event.get("parsed_command"))
+            or _format_command(event.get("parsed_cmd"))
+            or _format_command(event.get("argv"))
+            or _format_command(event.get("args"))
+        )
         return [{
             "type": "item",
             "itemType": "command_execution",
-            "command": _format_command(event.get("command")),
+            "command": command_text,
+            "cwd": _get_first_string(event.get("cwd"), event.get("workdir")),
             "output": event.get("aggregated_output") or event.get("formatted_output") or event.get("stdout"),
             "exitCode": event.get("exit_code"),
             "status": event.get("status"),
@@ -513,7 +898,7 @@ def _transform_codex_mcp_event(event: dict[str, Any], state: dict[str, Any]) -> 
 
 async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> None:
     """Run a single Codex turn via `codex mcp-server`."""
-    if not (mcp_types and CodexClientSession and StdioServerParameters and stdio_client):
+    if not (mcp_types and CodexClientSession and StdioServerParameters and _safe_stdio_client):
         raise CodexMcpBootstrapError("Python MCP client is not available")
 
     requested_session_id = options.get("sessionId")
@@ -530,6 +915,7 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
         abort_event=abort_event,
         provider="mcp",
         task=asyncio.current_task(),
+        writer=ws,
     )
 
     state: dict[str, Any] = {
@@ -539,6 +925,7 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
         "session_announced": bool(requested_session_id),
         "events_seen": 0,
         "saw_final_agent_message": False,
+        "compaction_in_progress": False,
     }
 
     async def _message_handler(
@@ -561,6 +948,14 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
 
         state["events_seen"] += 1
         _update_codex_session_id(state, _extract_thread_id(event, meta), ws)
+
+        token_budget = extract_codex_token_budget(event)
+        if token_budget:
+            ws.send({
+                "type": "token-budget",
+                "data": token_budget,
+                "sessionId": state["current_session_id"],
+            })
 
         for transformed in _transform_codex_mcp_event(event, state):
             ws.send({
@@ -634,7 +1029,7 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
             cwd=cwd,
         )
 
-        async with stdio_client(server) as (read_stream, write_stream):
+        async with _safe_stdio_client(server) as (read_stream, write_stream):
             async with CodexClientSession(
                 read_stream,
                 write_stream,
@@ -696,10 +1091,18 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
             "actualSessionId": state.get("actual_session_id"),
             "exitCode": 0,
         })
+        _sync_codex_history_index(
+            state.get("actual_session_id") or state["current_session_id"],
+            command,
+        )
     except asyncio.CancelledError:
         session = active_codex_sessions.get(state["current_session_id"])
         was_aborted = bool(session and session.get("status") == "aborted")
         if was_aborted:
+            _sync_codex_history_index(
+                state.get("actual_session_id") or state["current_session_id"],
+                command,
+            )
             return
         raise
     except FileNotFoundError as exc:
@@ -712,6 +1115,10 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
             "sessionId": state["current_session_id"],
             "actualSessionId": state.get("actual_session_id"),
         })
+        _sync_codex_history_index(
+            state.get("actual_session_id") or state["current_session_id"],
+            command,
+        )
     except Exception as exc:
         session = active_codex_sessions.get(state["current_session_id"])
         was_aborted = bool(session and session.get("status") == "aborted")
@@ -728,6 +1135,10 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
             "sessionId": state["current_session_id"],
             "actualSessionId": state.get("actual_session_id"),
         })
+        _sync_codex_history_index(
+            state.get("actual_session_id") or state["current_session_id"],
+            command,
+        )
     finally:
         _mark_active_session_completed(state["current_session_id"])
 
@@ -768,44 +1179,64 @@ def _build_codex_exec_command(command: str, options: dict[str, Any]) -> list[str
     return cmd_parts
 
 
-def _transform_codex_exec_event(event: dict[str, Any]) -> dict[str, Any]:
+def _transform_codex_exec_event(
+    event: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Transform `codex exec --json` events to the frontend format."""
     event_type = event.get("type", "")
 
     if event_type in ("item.started", "item.updated", "item.completed"):
         item = event.get("item", {})
+        compaction_state = _get_codex_compaction_state(item)
+        if compaction_state:
+            return _build_compaction_status_items(
+                state,
+                status=compaction_state,
+                summary=_extract_compaction_summary(item),
+            )
+
         item_type = item.get("type", "")
 
         if item_type == "agent_message":
-            return {
+            return [{
                 "type": "item",
                 "itemType": "agent_message",
                 "message": {"role": "assistant", "content": item.get("text", "")},
-            }
+            }]
         if item_type == "reasoning":
-            return {
+            return [{
                 "type": "item",
                 "itemType": "reasoning",
                 "message": {"role": "assistant", "content": item.get("text", ""), "isReasoning": True},
-            }
+            }]
         if item_type == "command_execution":
-            return {
+            command_text = (
+                _format_command(item.get("command"))
+                or _format_command(item.get("parsedCommand"))
+                or _format_command(item.get("parsed_command"))
+                or _format_command(item.get("parsed_cmd"))
+                or _format_command(item.get("argv"))
+                or _format_command(item.get("args"))
+            )
+            return [{
                 "type": "item",
                 "itemType": "command_execution",
-                "command": _format_command(item.get("command")),
-                "output": item.get("aggregated_output"),
+                "command": command_text,
+                "cwd": _get_first_string(item.get("cwd"), item.get("workdir")),
+                "output": item.get("aggregated_output") or item.get("formatted_output") or item.get("stdout") or item.get("output"),
                 "exitCode": item.get("exit_code"),
                 "status": item.get("status"),
-            }
+            }]
         if item_type == "file_change":
-            return {
+            return [{
                 "type": "item",
                 "itemType": "file_change",
                 "changes": item.get("changes"),
                 "status": item.get("status"),
-            }
+            }]
         if item_type == "mcp_tool_call":
-            return {
+            return [{
                 "type": "item",
                 "itemType": "mcp_tool_call",
                 "server": item.get("server"),
@@ -814,26 +1245,34 @@ def _transform_codex_exec_event(event: dict[str, Any]) -> dict[str, Any]:
                 "result": item.get("result"),
                 "error": item.get("error"),
                 "status": item.get("status"),
-            }
+            }]
         if item_type == "error":
-            return {
+            return [{
                 "type": "item",
                 "itemType": "error",
                 "message": {"role": "error", "content": item.get("message", "")},
-            }
-        return {"type": "item", "itemType": item_type, "item": item}
+            }]
+        return [{"type": "item", "itemType": item_type, "item": item}]
+
+    compaction_state = _get_codex_compaction_state(event)
+    if compaction_state:
+        return _build_compaction_status_items(
+            state,
+            status=compaction_state,
+            summary=_extract_compaction_summary(event),
+        )
 
     if event_type == "turn.started":
-        return {"type": "turn_started"}
+        return [{"type": "turn_started"}]
     if event_type == "turn.completed":
-        return {"type": "turn_complete", "usage": event.get("usage")}
+        return [{"type": "turn_complete", "usage": event.get("usage")}]
     if event_type == "turn.failed":
-        return {"type": "turn_failed", "error": event.get("error")}
+        return [{"type": "turn_failed", "error": event.get("error")}]
     if event_type == "thread.started":
-        return {"type": "thread_started", "threadId": event.get("thread_id") or event.get("id")}
+        return [{"type": "thread_started", "threadId": event.get("thread_id") or event.get("id")}]
     if event_type == "error":
-        return {"type": "error", "message": event.get("message")}
-    return {"type": event_type, "data": event}
+        return [{"type": "error", "message": event.get("message")}]
+    return [{"type": event_type, "data": event}]
 
 
 async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> None:
@@ -844,12 +1283,15 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
     cwd = options.get("cwd") or options.get("projectPath") or os.getcwd()
     abort_event = asyncio.Event()
     session_announced = False
+    proc: asyncio.subprocess.Process | None = None
+    exec_state: dict[str, Any] = {"compaction_in_progress": False}
 
     _add_active_session(
         current_session_id,
         abort_event=abort_event,
         provider="exec",
         task=asyncio.current_task(),
+        writer=ws,
     )
 
     try:
@@ -865,39 +1307,43 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
         )
         _set_active_session_process(current_session_id, proc)
 
-        while True:
+        async for line in _iter_stream_lines(proc.stdout, timeout=CODEX_QUERY_IDLE_TIMEOUT):
             if abort_event.is_set():
                 proc.kill()
-                break
-
-            line = await asyncio.wait_for(proc.stdout.readline(), timeout=300)
-            if not line:
                 break
 
             text = line.decode("utf-8", errors="replace")
             try:
                 event_data = json.loads(text.strip())
-                transformed = _transform_codex_exec_event(event_data)
+                token_budget = extract_codex_token_budget(event_data)
+                if token_budget:
+                    ws.send({
+                        "type": "token-budget",
+                        "data": token_budget,
+                        "sessionId": current_session_id,
+                    })
+                transformed_events = _transform_codex_exec_event(event_data, exec_state)
 
-                real_thread_id = transformed.get("threadId")
-                if real_thread_id:
-                    actual_session_id = real_thread_id
-                    _move_active_session(current_session_id, real_thread_id)
-                    current_session_id = real_thread_id
+                for transformed in transformed_events:
+                    real_thread_id = transformed.get("threadId")
+                    if real_thread_id:
+                        actual_session_id = real_thread_id
+                        _move_active_session(current_session_id, real_thread_id)
+                        current_session_id = real_thread_id
 
-                    if not session_announced:
-                        ws.send({
-                            "type": "session-created",
-                            "sessionId": current_session_id,
-                            "provider": "codex",
-                        })
-                        session_announced = True
+                        if not session_announced:
+                            ws.send({
+                                "type": "session-created",
+                                "sessionId": current_session_id,
+                                "provider": "codex",
+                            })
+                            session_announced = True
 
-                ws.send({
-                    "type": "codex-response",
-                    "data": transformed,
-                    "sessionId": current_session_id,
-                })
+                    ws.send({
+                        "type": "codex-response",
+                        "data": transformed,
+                        "sessionId": current_session_id,
+                    })
             except (json.JSONDecodeError, ValueError):
                 if text.strip():
                     print(f"[Codex Exec] Non-JSON stdout: {text.rstrip()}")
@@ -919,6 +1365,7 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
                 "sessionId": current_session_id,
                 "actualSessionId": actual_session_id,
             })
+            _sync_codex_history_index(actual_session_id or current_session_id, command)
             return
 
         if not session_announced:
@@ -934,13 +1381,20 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
             "actualSessionId": actual_session_id,
             "exitCode": exit_code or 0,
         })
+        _sync_codex_history_index(actual_session_id or current_session_id, command)
     except asyncio.TimeoutError:
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         ws.send({
             "type": "codex-error",
-            "error": "Codex query timed out",
+            "error": "Codex query timed out while waiting for output",
             "sessionId": current_session_id,
             "actualSessionId": actual_session_id,
         })
+        _sync_codex_history_index(actual_session_id or current_session_id, command)
     except FileNotFoundError:
         ws.send({
             "type": "codex-error",
@@ -959,6 +1413,7 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
                 "sessionId": current_session_id,
                 "actualSessionId": actual_session_id,
             })
+            _sync_codex_history_index(actual_session_id or current_session_id, command)
     finally:
         _mark_active_session_completed(current_session_id)
 
@@ -969,13 +1424,14 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
 
 async def query_codex(command: str, options: dict[str, Any], ws) -> None:
     """Execute a Codex query with MCP primary path and exec fallback."""
+    session_writer = ws if isinstance(ws, CodexSessionWriter) else CodexSessionWriter(ws)
     try:
-        await _query_codex_via_mcp(command, options, ws)
+        await _query_codex_via_mcp(command, options, session_writer)
         return
     except CodexMcpBootstrapError as exc:
         print(f"[Codex] MCP bootstrap failed, falling back to exec: {exc}")
 
-    await _query_codex_via_exec(command, options, ws)
+    await _query_codex_via_exec(command, options, session_writer)
 
 
 def abort_codex_session(session_id: str) -> bool:

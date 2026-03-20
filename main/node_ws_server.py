@@ -19,6 +19,10 @@ class NodeWsServer:
         self.registry = registry
         self.allowed_tokens = allowed_tokens or []
         self._message_listeners: dict[str, set[Callable]] = {}
+        self._outbound_connector = None
+
+    def attach_outbound_connector(self, connector):
+        self._outbound_connector = connector
 
     async def handle_connection(self, ws: WebSocket):
         """Handle a new WebSocket connection from a Node."""
@@ -120,12 +124,30 @@ class NodeWsServer:
     async def send_to_node(self, node_id: str, message: dict) -> bool:
         """Send a message to a specific node."""
         record = self.registry.get_node(node_id)
-        if not record or not record.get("ws"):
-            return False
+        ws = record.get("ws") if record else None
+        if not self.registry._is_ws_usable(ws):
+            if self._outbound_connector:
+                reconnected = await self._outbound_connector.ensure_connection(node_id)
+                if reconnected:
+                    record = self.registry.get_node(node_id)
+                    ws = record.get("ws") if record else None
+            if not self.registry._is_ws_usable(ws):
+                return False
         try:
-            await self._send_message(record["ws"], message)
+            await self._send_message(ws, message)
             return True
         except Exception:
+            if self._outbound_connector:
+                reconnected = await self._outbound_connector.ensure_connection(node_id)
+                if reconnected:
+                    record = self.registry.get_node(node_id)
+                    ws = record.get("ws") if record else None
+                    if self.registry._is_ws_usable(ws):
+                        try:
+                            await self._send_message(ws, message)
+                            return True
+                        except Exception:
+                            return False
             return False
 
     async def send_request(self, node_id: str, message: dict, timeout_ms: int = 30000) -> dict:

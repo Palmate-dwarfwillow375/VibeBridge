@@ -25,6 +25,9 @@ class OutboundConnector:
         self.connections: dict[str, dict] = {}
         self._tasks: list[asyncio.Task] = []
 
+    def _ws_is_usable(self, ws) -> bool:
+        return self.registry._is_ws_usable(ws)
+
     def start(self, node_addresses: str | list[str], node_tokens: dict[str, str] | None = None):
         """Parse configured node addresses and connect to each node."""
         if isinstance(node_addresses, str):
@@ -52,6 +55,7 @@ class OutboundConnector:
             existing = self.connections.get(node_id)
             if existing and existing.get("should_reconnect"):
                 host_changed = existing.get("host") != host or existing.get("port") != port
+                ws_usable = self._ws_is_usable(existing.get("ws"))
                 if node_id in node_tokens:
                     existing["token"] = node_tokens[node_id]
 
@@ -60,15 +64,22 @@ class OutboundConnector:
                     existing["port"] = port
                     existing["reconnect_delay"] = INITIAL_RECONNECT_DELAY
                     ws = existing.get("ws")
-                    if ws:
+                    if ws_usable:
                         asyncio.create_task(ws.close())
                         scheduled_connections += 1
-                    elif not existing.get("connecting"):
-                        task = asyncio.create_task(self._connect(node_id))
-                        self._tasks.append(task)
-                        scheduled_connections += 1
-                elif existing.get("ws") is None and not existing.get("connecting"):
+                    else:
+                        existing["ws"] = None
+                        if not existing.get("connecting"):
+                            task = asyncio.create_task(self._connect(node_id))
+                            self._tasks.append(task)
+                            scheduled_connections += 1
+                elif not ws_usable and not existing.get("connecting"):
+                    existing["ws"] = None
                     existing["reconnect_delay"] = INITIAL_RECONNECT_DELAY
+                    task = asyncio.create_task(self._connect(node_id))
+                    self._tasks.append(task)
+                    scheduled_connections += 1
+                elif existing.get("ws") is None and not existing.get("connecting"):
                     task = asyncio.create_task(self._connect(node_id))
                     self._tasks.append(task)
                     scheduled_connections += 1
@@ -93,6 +104,30 @@ class OutboundConnector:
                 f"[Main] OutboundConnector scheduled {scheduled_connections} connection(s) "
                 f"across {len(self.connections)} tracked node(s)"
             )
+
+    async def ensure_connection(self, node_id: str, timeout: float = 8.0) -> bool:
+        conn = self.connections.get(node_id)
+        if not conn or not conn.get("should_reconnect"):
+            return False
+
+        existing_record = self.registry.get_node(node_id)
+        if existing_record and self._ws_is_usable(existing_record.get("ws")):
+            return True
+
+        if not conn.get("connecting"):
+            conn["ws"] = None
+            conn["reconnect_delay"] = INITIAL_RECONNECT_DELAY
+            task = asyncio.create_task(self._connect(node_id))
+            self._tasks.append(task)
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            record = self.registry.get_node(node_id)
+            if record and self._ws_is_usable(record.get("ws")) and record.get("status") == "online":
+                return True
+            await asyncio.sleep(0.1)
+
+        return False
 
     def stop(self):
         for conn in self.connections.values():

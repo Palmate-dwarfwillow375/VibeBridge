@@ -47,6 +47,7 @@ _tokens = NODE_REGISTER_TOKENS_LIST
 registry = NodeRegistry()
 node_ws_server = NodeWsServer(registry, _tokens)
 outbound_connector = OutboundConnector(registry, node_ws_server, _tokens)
+node_ws_server.attach_outbound_connector(outbound_connector)
 ws_relay = WsRelay(registry, node_ws_server)
 shell_relay = ShellRelay(registry, _tokens)
 

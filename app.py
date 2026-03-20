@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import runtime_role
+from utils.codex_token_usage import extract_codex_token_budget
 
 runtime_role.ROLE_OVERRIDE = "node"
 
@@ -113,6 +114,17 @@ async def rename_session(session_id: str, request: Request, _=Depends(authentica
     if provider not in VALID_PROVIDERS:
         raise HTTPException(400, f"Provider must be one of: {', '.join(VALID_PROVIDERS)}")
     session_names_db.set_name(safe_id, provider, summary)
+    if provider == "codex":
+        try:
+            from utils.codex_session_index import sync_codex_session_index_entry
+
+            sync_codex_session_index_entry(
+                safe_id,
+                fallback_name=summary,
+                prefer_existing_name=False,
+            )
+        except Exception as exc:
+            print(f"[cc_server] Failed to sync Codex session rename for {safe_id}: {exc}")
     return {"success": True}
 
 
@@ -583,23 +595,14 @@ async def token_usage(project_name: str, session_id: str, provider: str = "claud
                             continue
                         try:
                             entry = json.loads(line)
-                            if (entry.get("type") == "event_msg"
-                                    and entry.get("payload", {}).get("type") == "token_count"
-                                    and entry.get("payload", {}).get("info")):
-                                last_usage = entry["payload"]["info"]
+                            if entry.get("type") == "event_msg":
+                                payload = entry.get("payload", {})
+                                if payload.get("type") == "token_count" and payload.get("info"):
+                                    last_usage = extract_codex_token_budget(payload)
                         except Exception:
                             pass
                     if last_usage:
-                        total_usage = last_usage.get("total_token_usage", {})
-                        return {
-                            "used": total_usage.get("total_tokens", 0),
-                            "total": last_usage.get("model_context_window", 200000),
-                            "breakdown": {
-                                "input": total_usage.get("input_tokens", 0),
-                                "cacheCreation": 0,
-                                "cacheRead": 0,
-                            },
-                        }
+                        return last_usage
         except Exception:
             pass
         return {"used": 0, "total": 200000, "breakdown": {"input": 0, "cacheCreation": 0, "cacheRead": 0}}
@@ -771,6 +774,18 @@ async def startup():
     initialize_database()
     print(f"[cc_server] Config: {CONFIG_SOURCE_LABEL}")
 
+    try:
+        from utils.codex_session_index import backfill_codex_session_index
+
+        backfill_result = backfill_codex_session_index()
+        if backfill_result.get("added"):
+            print(
+                "[cc_server] Backfilled "
+                f"{backfill_result['added']} Codex session index entries"
+            )
+    except Exception as exc:
+        print(f"[cc_server] Codex session index backfill skipped: {exc}")
+
     if MAIN_SERVER_URL and MAIN_REGISTER_URL:
         print(
             "[cc_server] Both MAIN_SERVER_URL and MAIN_REGISTER_URL are set; "
@@ -797,7 +812,14 @@ async def startup():
             get_pending_codex_approvals_for_session,
             resolve_codex_approval,
         )
-        from projects import get_projects, get_sessions, get_session_messages, get_codex_session_messages
+        from projects import (
+            extract_project_directory,
+            get_codex_session_messages,
+            get_codex_sessions,
+            get_projects,
+            get_session_messages,
+            get_sessions,
+        )
         start_node_connector({
             "query_claude": query_claude_sdk,
             "query_codex": query_codex,
@@ -816,6 +838,8 @@ async def startup():
             "get_sessions": get_sessions,
             "get_session_messages": get_session_messages,
             "get_codex_session_messages": get_codex_session_messages,
+            "get_codex_sessions": get_codex_sessions,
+            "extract_project_directory": extract_project_directory,
         })
         print(f"[cc_server] Node connector started → {MAIN_SERVER_URL}")
     elif MAIN_REGISTER_URL:

@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.codex_token_usage import extract_codex_token_budget
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -704,6 +706,105 @@ def _normalize_path(p: str) -> str:
     return os.path.normpath(os.path.abspath(p.strip()))
 
 
+def _build_codex_bash_tool_input(arguments: Any) -> str:
+    """Normalize Codex command-call arguments to the Bash tool payload shape."""
+    parsed_arguments: Any = arguments
+
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except Exception:
+            parsed_arguments = arguments
+
+    command_value: Optional[str] = None
+    cwd_value: Optional[str] = None
+
+    if isinstance(parsed_arguments, dict):
+        raw_command = parsed_arguments.get("command")
+        if not raw_command:
+            raw_command = parsed_arguments.get("cmd")
+
+        if isinstance(raw_command, str) and raw_command.strip():
+            command_value = raw_command
+        elif isinstance(raw_command, list):
+            parts = [str(part).strip() for part in raw_command if part is not None and str(part).strip()]
+            if parts:
+                command_value = " ".join(parts)
+
+        raw_cwd = parsed_arguments.get("cwd") or parsed_arguments.get("workdir")
+        if isinstance(raw_cwd, str) and raw_cwd.strip():
+            cwd_value = raw_cwd
+
+    elif isinstance(parsed_arguments, str) and parsed_arguments.strip():
+        command_value = parsed_arguments
+
+    payload: dict[str, str] = {}
+    if command_value:
+        payload["command"] = command_value
+    if cwd_value:
+        payload["cwd"] = cwd_value
+
+    if not payload:
+        payload["command"] = ""
+
+    return json.dumps(payload)
+
+
+def _extract_codex_compaction_summary(payload: Any) -> Optional[str]:
+    if isinstance(payload, str):
+        text = payload.strip()
+        return text or None
+
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("message", "summary", "content", "handoff"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+
+        if isinstance(value, list):
+            text_parts: list[str] = []
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    text_parts.append(item.strip())
+                    continue
+
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+
+            if text_parts:
+                return "\n".join(text_parts)
+
+    return None
+
+
+def _append_codex_compaction_messages(
+    messages: list[dict],
+    timestamp: Any,
+    summary: Optional[str] = None,
+) -> None:
+    messages.append({
+        "type": "compaction_status",
+        "timestamp": timestamp,
+        "status": "compacting",
+    })
+
+    compacted_message: dict[str, Any] = {
+        "type": "compaction_status",
+        "timestamp": timestamp,
+        "status": "compacted",
+    }
+    if summary:
+        compacted_message["message"] = {"role": "assistant", "content": summary}
+
+    messages.append(compacted_message)
+
+
 def _is_visible_codex_user_message(payload: Optional[dict]) -> bool:
     if not payload or payload.get("type") != "user_message":
         return False
@@ -911,6 +1012,7 @@ async def get_codex_session_messages(
 
         messages: list[dict] = []
         token_usage: Optional[dict] = None
+        compacted_timestamps: set[str] = set()
 
         loop = asyncio.get_event_loop()
         text = await loop.run_in_executor(None, session_file.read_text, "utf-8")
@@ -928,18 +1030,31 @@ async def get_codex_session_messages(
                 if (entry_type == "event_msg"
                         and payload.get("type") == "token_count"
                         and payload.get("info")):
-                    info = payload["info"]
-                    if info.get("total_token_usage"):
-                        token_usage = {
-                            "used": info["total_token_usage"].get("total_tokens", 0),
-                            "total": info.get("model_context_window", 200000),
-                        }
+                    token_usage = extract_codex_token_budget(payload)
+
+                timestamp = entry.get("timestamp")
+
+                # Context compaction markers / summaries
+                if entry_type == "compacted":
+                    summary = _extract_codex_compaction_summary(payload)
+                    key = str(timestamp or "")
+                    if key not in compacted_timestamps:
+                        _append_codex_compaction_messages(messages, timestamp, summary)
+                        compacted_timestamps.add(key)
+                    continue
+
+                if entry_type == "event_msg" and payload.get("type") == "context_compacted":
+                    key = str(timestamp or "")
+                    if key not in compacted_timestamps:
+                        _append_codex_compaction_messages(messages, timestamp)
+                        compacted_timestamps.add(key)
+                    continue
 
                 # User message
                 if entry_type == "event_msg" and _is_visible_codex_user_message(payload):
                     messages.append({
                         "type": "user",
-                        "timestamp": entry.get("timestamp"),
+                        "timestamp": timestamp,
                         "message": {"role": "user", "content": payload.get("message")},
                     })
 
@@ -951,7 +1066,7 @@ async def get_codex_session_messages(
                     if text_content and text_content.strip():
                         messages.append({
                             "type": "assistant",
-                            "timestamp": entry.get("timestamp"),
+                            "timestamp": timestamp,
                             "message": {"role": "assistant", "content": text_content},
                         })
 
@@ -963,7 +1078,7 @@ async def get_codex_session_messages(
                     if summary_text:
                         messages.append({
                             "type": "thinking",
-                            "timestamp": entry.get("timestamp"),
+                            "timestamp": timestamp,
                             "message": {"role": "assistant", "content": summary_text},
                         })
 
@@ -971,16 +1086,12 @@ async def get_codex_session_messages(
                 if entry_type == "response_item" and payload.get("type") == "function_call":
                     tool_name = payload.get("name", "")
                     tool_input = payload.get("arguments", "")
-                    if tool_name == "shell_command":
+                    if tool_name in {"shell_command", "exec_command"}:
                         tool_name = "Bash"
-                        try:
-                            args = json.loads(payload.get("arguments", "{}"))
-                            tool_input = json.dumps({"command": args.get("command")})
-                        except Exception:
-                            pass
+                        tool_input = _build_codex_bash_tool_input(payload.get("arguments", ""))
                     messages.append({
                         "type": "tool_use",
-                        "timestamp": entry.get("timestamp"),
+                        "timestamp": timestamp,
                         "toolName": tool_name,
                         "toolInput": tool_input,
                         "toolCallId": payload.get("call_id"),
@@ -990,7 +1101,7 @@ async def get_codex_session_messages(
                 if entry_type == "response_item" and payload.get("type") == "function_call_output":
                     messages.append({
                         "type": "tool_result",
-                        "timestamp": entry.get("timestamp"),
+                        "timestamp": timestamp,
                         "toolCallId": payload.get("call_id"),
                         "output": payload.get("output", ""),
                     })
@@ -1012,7 +1123,7 @@ async def get_codex_session_messages(
                                 new_lines.append(pl[1:])
                         messages.append({
                             "type": "tool_use",
-                            "timestamp": entry.get("timestamp"),
+                            "timestamp": timestamp,
                             "toolName": "Edit",
                             "toolInput": json.dumps({
                                 "file_path": file_path_str,
@@ -1024,7 +1135,7 @@ async def get_codex_session_messages(
                     else:
                         messages.append({
                             "type": "tool_use",
-                            "timestamp": entry.get("timestamp"),
+                            "timestamp": timestamp,
                             "toolName": tool_name,
                             "toolInput": tool_input_raw,
                             "toolCallId": payload.get("call_id"),
@@ -1034,7 +1145,7 @@ async def get_codex_session_messages(
                 if entry_type == "response_item" and payload.get("type") == "custom_tool_call_output":
                     messages.append({
                         "type": "tool_result",
-                        "timestamp": entry.get("timestamp"),
+                        "timestamp": timestamp,
                         "toolCallId": payload.get("call_id"),
                         "output": payload.get("output", ""),
                     })

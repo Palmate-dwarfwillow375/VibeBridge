@@ -13,8 +13,9 @@ def create_browser_gateway(registry, node_ws_server) -> APIRouter:
     router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
     async def _forward(node_id: str, action: str, params: dict, timeout_ms: int = 30000) -> dict:
-        if not registry.is_online(node_id):
-            raise HTTPException(503, f"Node {node_id} is offline")
+        node = registry.get_node(node_id)
+        if not node:
+            raise HTTPException(404, f"Node {node_id} not found")
         message, request_id = create_request(node_id, action, params)
         try:
             response = await node_ws_server.send_request(node_id, message, timeout_ms)
@@ -55,6 +56,8 @@ def create_browser_gateway(registry, node_ws_server) -> APIRouter:
     async def list_sessions(
         node_id: str, project_name: str,
         limit: int | None = None, offset: int | None = None,
+        provider: str | None = None,
+        project_path: str | None = None,
         _=Depends(authenticate_token),
     ):
         params = {"projectName": project_name}
@@ -62,6 +65,10 @@ def create_browser_gateway(registry, node_ws_server) -> APIRouter:
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
+        if provider:
+            params["provider"] = provider
+        if project_path:
+            params["projectPath"] = project_path
         return await _forward(node_id, NODE_ACTIONS["PROJECT_SESSIONS"], params)
 
     @router.get("/{node_id}/projects/{project_name}/sessions/{session_id}/messages")
