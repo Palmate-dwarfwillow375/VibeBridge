@@ -30,6 +30,7 @@ from typing import Any
 
 from pydantic import RootModel
 from config import CODEX_QUERY_IDLE_TIMEOUT_MS, CODEX_TOOL_APPROVAL_TIMEOUT_MS
+from utils.codex_cli import get_codex_cli_env, resolve_codex_cli
 from utils.codex_session_index import sync_codex_session_index_entry
 from utils.codex_token_usage import extract_codex_token_budget
 
@@ -448,10 +449,11 @@ def _get_codex_mcp_subcommand() -> str:
     """Return the correct MCP subcommand for the installed Codex CLI."""
     try:
         completed = subprocess.run(
-            ["codex", "--version"],
+            [resolve_codex_cli(), "--version"],
             check=True,
             capture_output=True,
             text=True,
+            env=get_codex_cli_env(),
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return "mcp-server"
@@ -1023,9 +1025,9 @@ async def _query_codex_via_mcp(command: str, options: dict[str, Any], ws) -> Non
     try:
         mcp_subcommand = _get_codex_mcp_subcommand()
         server = StdioServerParameters(
-            command="codex",
+            command=resolve_codex_cli(),
             args=[mcp_subcommand],
-            env={**os.environ, "FORCE_COLOR": "0"},
+            env={**get_codex_cli_env(), "FORCE_COLOR": "0"},
             cwd=cwd,
         )
 
@@ -1154,7 +1156,7 @@ def _build_codex_exec_command(command: str, options: dict[str, Any]) -> list[str
     reasoning_effort = options.get("reasoningEffort")
     execution_policy = _build_codex_execution_policy(permission_mode, reasoning_effort)
 
-    cmd_parts = ["codex", "exec"]
+    cmd_parts = [resolve_codex_cli(), "exec"]
     if session_id:
         cmd_parts.append("resume")
 
@@ -1303,7 +1305,7 @@ async def _query_codex_via_exec(command: str, options: dict[str, Any], ws) -> No
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            env={**os.environ, "FORCE_COLOR": "0"},
+            env={**get_codex_cli_env(), "FORCE_COLOR": "0"},
         )
         _set_active_session_process(current_session_id, proc)
 

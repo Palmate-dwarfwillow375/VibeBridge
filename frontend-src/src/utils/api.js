@@ -124,11 +124,12 @@ export const api = {
   // Protected endpoints
   // config endpoint removed - no longer needed (frontend uses window.location)
   projects: () => authenticatedFetch('/api/projects'),
-  sessions: (projectName, limit = 5, offset = 0, provider = 'claude') => {
+  sessions: (projectName, limit = 5, offset = 0, provider = 'claude', projectPath = '') => {
     const params = new URLSearchParams();
     params.append('limit', limit);
     params.append('offset', offset);
     if (provider) params.append('provider', provider);
+    if (provider === 'codex' && projectPath) params.append('projectPath', projectPath);
     return authenticatedFetch(`/api/projects/${projectName}/sessions?${params.toString()}`);
   },
   sessionMessages: (projectName, sessionId, limit = null, offset = 0, provider = 'claude') => {
@@ -346,11 +347,12 @@ export const api = {
         method: 'DELETE',
       }),
     projects: (nodeId) => authenticatedFetch(`/api/nodes/${nodeId}/projects`),
-    sessions: (nodeId, projectName, limit = 5, offset = 0, provider = 'claude') => {
+    sessions: (nodeId, projectName, limit = 5, offset = 0, provider = 'claude', projectPath = '') => {
       const params = new URLSearchParams();
       params.append('limit', limit);
       params.append('offset', offset);
       if (provider) params.append('provider', provider);
+      if (provider === 'codex' && projectPath) params.append('projectPath', projectPath);
       return authenticatedFetch(
         `/api/nodes/${nodeId}/projects/${projectName}/sessions?${params.toString()}`
       );
@@ -378,12 +380,13 @@ export const api = {
     }
     return authenticatedFetch('/api/projects');
   },
-  nodeAwareSessions: (projectName, limit = 5, offset = 0, provider = 'claude') => {
+  nodeAwareSessions: (projectName, limit = 5, offset = 0, provider = 'claude', projectPath = '') => {
     const nodeId = getSelectedNodeId();
     const params = new URLSearchParams();
     params.append('limit', limit);
     params.append('offset', offset);
     if (provider) params.append('provider', provider);
+    if (provider === 'codex' && projectPath) params.append('projectPath', projectPath);
     const queryString = params.toString();
     if (nodeId && isMultiNodeMode()) {
       return authenticatedFetch(`/api/nodes/${nodeId}/projects/${projectName}/sessions?${queryString}`);

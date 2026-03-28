@@ -9,6 +9,7 @@ import platform
 import random
 
 import websockets
+from node_http_proxy import proxy_http_request
 from config import (
     PORT,
     NODE_ADVERTISE_HOST,
@@ -217,6 +218,17 @@ class NodeConnector:
                         params.get("projectName"), params.get("sessionId"),
                         params.get("limit"), 0 if offset is None else offset,
                     )
+                await self._send(create_response(self.node_id, request_id, data))
+
+            elif action == NODE_ACTIONS["HTTP_PROXY"]:
+                data = await proxy_http_request(
+                    method=params.get("method", "GET"),
+                    path=params.get("path", "/"),
+                    query_string=params.get("queryString", ""),
+                    headers=params.get("headers"),
+                    body=params.get("body"),
+                    body_encoding=params.get("bodyEncoding", "base64"),
+                )
                 await self._send(create_response(self.node_id, request_id, data))
 
             elif action == NODE_ACTIONS["CHAT_SEND"]:

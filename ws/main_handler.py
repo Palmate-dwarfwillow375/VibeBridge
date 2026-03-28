@@ -20,6 +20,7 @@ from config import (
 )
 
 from node_protocol import MESSAGE_TYPES, create_message, create_response, create_event, parse_message
+from node_http_proxy import proxy_http_request
 from providers.claude_sdk import (
     query_claude_sdk,
     abort_claude_session,
@@ -240,6 +241,17 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
                     0 if offset is None else offset,
                 )
             await _send(create_response(node_id, request_id, messages))
+
+        elif action == "http.proxy":
+            proxied = await proxy_http_request(
+                method=params.get("method", "GET"),
+                path=params.get("path", "/"),
+                query_string=params.get("queryString", ""),
+                headers=params.get("headers"),
+                body=params.get("body"),
+                body_encoding=params.get("bodyEncoding", "base64"),
+            )
+            await _send(create_response(node_id, request_id, proxied))
 
         elif action == "chat.abort":
             provider = params.get("provider", "claude")

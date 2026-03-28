@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from database.db import session_names_db, apply_custom_session_names
 from middleware.auth import authenticate_token
+from utils.codex_cli import get_codex_cli_env, resolve_codex_cli
 
 router = APIRouter(prefix="/api/codex", tags=["codex"])
 
@@ -128,9 +129,10 @@ async def delete_session(session_id: str, _=Depends(authenticate_token)):
 
 async def _run_codex_cli(*args: str) -> tuple:
     proc = await asyncio.create_subprocess_exec(
-        "codex", *args,
+        resolve_codex_cli(), *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=get_codex_cli_env(),
     )
     stdout, stderr = await proc.communicate()
     return stdout.decode(errors="replace"), stderr.decode(errors="replace"), proc.returncode

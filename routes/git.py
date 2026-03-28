@@ -91,6 +91,15 @@ async def _get_project_path(project: str) -> str:
     For now, treat the project param as a literal path.
     Full encoded-name resolution comes in Phase 5 (projects.py).
     """
+    try:
+        from projects import extract_project_directory
+
+        resolved = await extract_project_directory(project)
+        if resolved and os.path.isdir(resolved):
+            return _validate_project_path(resolved)
+    except Exception:
+        pass
+
     # Try literal path first
     if os.path.isdir(project):
         return _validate_project_path(project)

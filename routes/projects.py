@@ -152,13 +152,14 @@ async def list_sessions(
     limit: int = 5,
     offset: int = 0,
     provider: str = "claude",
+    projectPath: Optional[str] = None,
     _=Depends(authenticate_token),
 ):
     from projects import extract_project_directory, get_codex_sessions, get_sessions
     try:
         normalized_provider = "codex" if provider == "codex" else "claude"
         if normalized_provider == "codex":
-            project_path = await extract_project_directory(project_name)
+            project_path = projectPath or await extract_project_directory(project_name)
             all_sessions = await get_codex_sessions(project_path, 0)
             paginated_sessions = all_sessions[offset: offset + limit]
             apply_custom_session_names(paginated_sessions, "codex")

@@ -7,6 +7,7 @@ Codex:   ~/.codex/sessions/**/*.jsonl
 """
 
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,15 @@ _project_dir_cache: dict[str, str] = {}
 
 def clear_project_directory_cache():
     _project_dir_cache.clear()
+
+
+def _normalize_project_cache_key(project_path: str) -> str:
+    normalized = _normalize_path(project_path)
+    if not normalized:
+        return ""
+    leaf = Path(normalized).name or "project"
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
+    return f"codex-{leaf}-{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +192,7 @@ async def get_projects(progress_callback=None) -> list[dict]:
             config[key] = p
     projects: list[dict] = []
     existing_projects: set[str] = set()
+    existing_project_paths: set[str] = set()
 
     # Shared Codex index across all projects (built once)
     codex_index_ref: dict[str, Any] = {"sessions_by_project": None}
@@ -247,6 +258,9 @@ async def get_projects(progress_callback=None) -> list[dict]:
             project["codexSessions"] = []
 
         projects.append(project)
+        normalized_actual_dir = _normalize_path(actual_dir)
+        if normalized_actual_dir:
+            existing_project_paths.add(normalized_actual_dir)
 
     # Process manually-added projects not in directories
     for project_name in manual_only:
@@ -286,6 +300,38 @@ async def get_projects(progress_callback=None) -> list[dict]:
             project["codexSessions"] = []
 
         projects.append(project)
+        normalized_actual_dir = _normalize_path(actual_dir)
+        if normalized_actual_dir:
+            existing_project_paths.add(normalized_actual_dir)
+
+    # Surface Codex-only projects even when there is no Claude project folder/config entry.
+    if codex_index_ref.get("sessions_by_project") is None:
+        codex_index_ref["sessions_by_project"] = await _build_codex_sessions_index()
+
+    sessions_by_project = codex_index_ref["sessions_by_project"] or {}
+    for project_path, codex_sessions in sessions_by_project.items():
+        normalized_project_path = _normalize_path(project_path)
+        if not normalized_project_path or normalized_project_path in existing_project_paths:
+            continue
+
+        project_name = _normalize_project_cache_key(normalized_project_path)
+        if not project_name:
+            continue
+
+        _project_dir_cache[project_name] = normalized_project_path
+
+        project = {
+            "name": project_name,
+            "path": normalized_project_path,
+            "displayName": await generate_display_name(project_name, normalized_project_path),
+            "fullPath": normalized_project_path,
+            "isCodexOnly": True,
+            "sessions": [],
+            "codexSessions": list(codex_sessions),
+            "sessionMeta": {"hasMore": False, "total": 0},
+        }
+        projects.append(project)
+        existing_project_paths.add(normalized_project_path)
 
     if progress_callback:
         progress_callback({"phase": "complete", "current": total_projects, "total": total_projects})

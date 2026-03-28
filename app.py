@@ -33,6 +33,7 @@ from routes.codex import router as codex_router
 from routes.taskmaster import router as taskmaster_router
 from routes.plugins import router as plugins_router
 from routes.agent import router as agent_router
+from node_http_proxy import set_proxy_app
 from config import (
     PORT,
     HOST,
@@ -44,6 +45,7 @@ from config import (
 )
 
 app = FastAPI(title="cc_server", version="0.1.0")
+set_proxy_app(app)
 
 # CORS — match Express cors() defaults (allow all origins in dev)
 app.add_middleware(
@@ -776,12 +778,20 @@ async def startup():
 
     try:
         from utils.codex_session_index import backfill_codex_session_index
+        from utils.codex_ide_compat import normalize_codex_threads_for_ide
 
         backfill_result = backfill_codex_session_index()
         if backfill_result.get("added"):
             print(
                 "[cc_server] Backfilled "
                 f"{backfill_result['added']} Codex session index entries"
+            )
+
+        ide_compat_result = normalize_codex_threads_for_ide()
+        if ide_compat_result.get("updated"):
+            print(
+                "[cc_server] Normalized "
+                f"{ide_compat_result['updated']} Codex IDE history entries"
             )
     except Exception as exc:
         print(f"[cc_server] Codex session index backfill skipped: {exc}")

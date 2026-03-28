@@ -1,12 +1,18 @@
 frontend-src/node_modules/
 frontend-src/.vite/
+frontend-src/dist/
 
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
+logs/
+nohup.out
 
 .DS_Store
 
 database/*.db
 database/*.db-shm
 database/*.db-wal
+configs/main.toml
+configs/node.toml

@@ -22,6 +22,7 @@ NODE_ACTIONS = {
     "PROJECT_LIST": "project.list",
     "PROJECT_SESSIONS": "project.sessions",
     "PROJECT_SESSION_MESSAGES": "project.sessionMessages",
+    "HTTP_PROXY": "http.proxy",
     "CHAT_SEND": "chat.send",
     "CHAT_ABORT": "chat.abort",
     "NODE_PING": "node.ping",

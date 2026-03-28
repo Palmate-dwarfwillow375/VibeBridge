@@ -7,6 +7,8 @@ Central control plane:
 - Provides /api/nodes/* REST endpoints
 - Proxies API requests to nodes via X-Node-Id header
 """
+import base64
+import json
 import sys
 from pathlib import Path
 
@@ -17,7 +19,6 @@ import runtime_role
 
 runtime_role.ROLE_OVERRIDE = "main"
 
-import httpx
 from fastapi import FastAPI, WebSocket, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -30,6 +31,7 @@ from main.outbound_connector import OutboundConnector
 from main.browser_gateway import create_browser_gateway
 from main.ws_relay import WsRelay
 from main.shell_relay import ShellRelay
+from node_protocol import NODE_ACTIONS, create_request
 from routes.auth import router as auth_router
 from config import (
     PORT,
@@ -136,6 +138,92 @@ PROXIED_PREFIXES = (
     "/api/search", "/api/system",
 )
 
+_REQUEST_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "x-node-id",
+}
+
+_RESPONSE_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "transfer-encoding",
+}
+
+
+async def _proxy_request_via_node_ws(request: Request, node_id: str, decoded: dict) -> Response:
+    body = await request.body()
+    fwd_headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in _REQUEST_HOP_BY_HOP_HEADERS
+    }
+    fwd_headers["x-authenticated-user-id"] = str(decoded["userId"])
+    if decoded.get("username"):
+        fwd_headers["x-authenticated-username"] = str(decoded["username"])
+
+    message, request_id = create_request(
+        node_id,
+        NODE_ACTIONS["HTTP_PROXY"],
+        {
+            "method": request.method,
+            "path": request.url.path,
+            "queryString": request.url.query,
+            "headers": fwd_headers,
+            "body": base64.b64encode(body).decode("ascii"),
+            "bodyEncoding": "base64",
+        },
+    )
+
+    try:
+        response_msg = await node_ws_server.send_request(node_id, message, timeout_ms=120000)
+    except TimeoutError:
+        return Response(
+            content=json.dumps({"detail": f"Request to node {node_id} timed out"}),
+            status_code=504,
+            media_type="application/json",
+        )
+    except ConnectionError as exc:
+        return Response(
+            content=json.dumps({"detail": str(exc)}),
+            status_code=502,
+            media_type="application/json",
+        )
+
+    payload = response_msg.get("payload", {})
+    if payload.get("error"):
+        return Response(
+            content=json.dumps({"detail": payload["error"]}),
+            status_code=502,
+            media_type="application/json",
+        )
+
+    proxied = payload.get("data") or {}
+    response_body = proxied.get("body", "")
+    if proxied.get("bodyEncoding") == "base64":
+        content = base64.b64decode(response_body) if response_body else b""
+    else:
+        content = response_body.encode("utf-8")
+
+    resp_headers = {
+        key: value
+        for key, value in (proxied.get("headers") or {}).items()
+        if key.lower() not in _RESPONSE_HOP_BY_HOP_HEADERS
+    }
+    return Response(
+        content=content,
+        status_code=int(proxied.get("statusCode", 200)),
+        headers=resp_headers,
+    )
+
 
 @app.middleware("http")
 async def proxy_middleware(request: Request, call_next):
@@ -171,37 +259,10 @@ async def proxy_middleware(request: Request, call_next):
         else:
             return Response(content='{"detail":"X-Node-Id header required"}', status_code=400, media_type="application/json")
 
-    addr = registry.get_node_address(node_id)
-    if not addr:
+    node = registry.get_node(node_id)
+    if not node:
         return Response(content=f'{{"detail":"Node {node_id} unavailable"}}', status_code=503, media_type="application/json")
-
-    target_url = f"http://{addr['host']}:{addr['port']}{request.url.path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
-
-    # Forward headers, fix host
-    fwd_headers = dict(request.headers)
-    fwd_headers["host"] = f"{addr['host']}:{addr['port']}"
-    fwd_headers["x-authenticated-user-id"] = str(decoded["userId"])
-    if decoded.get("username"):
-        fwd_headers["x-authenticated-username"] = str(decoded["username"])
-
-    async with httpx.AsyncClient() as client:
-        try:
-            body = await request.body()
-            resp = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=fwd_headers,
-                content=body,
-                timeout=60.0,
-            )
-            # Filter hop-by-hop headers
-            resp_headers = {k: v for k, v in resp.headers.items()
-                           if k.lower() not in ("transfer-encoding", "connection")}
-            return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
-        except httpx.RequestError as e:
-            return Response(content=f'{{"detail":"Proxy error: {e}"}}', status_code=502, media_type="application/json")
+    return await _proxy_request_via_node_ws(request, node_id, decoded)
 
 
 # ---------------------------------------------------------------------------
