@@ -1,23 +1,42 @@
 # Node Server runtime config.
 
 [server]
+# Listen address for the local Node HTTP API.
+# Main may need to reach this address/port unless all traffic is tunneled over WS.
 host = "0.0.0.0"
+# Node HTTP API port. Health check is exposed at /health on this port.
 port = 4456
 
 [database]
+# SQLite file used by the Node for local auth/session metadata.
+# Relative paths are resolved from the repo root.
 path = "database/auth.db"
 
 [auth]
+# Single-user convenience mode for standalone/local use.
 platform_mode = false
+# JWT signing secret for direct node access.
+# Leave empty to auto-generate and persist one on first start.
 jwt_secret = ""
 
 [node]
+# Direct Node -> Main WebSocket target.
+# When this is set, Node connects to Main at /ws/node.
 main_server_url = "ws://127.0.0.1:4457/ws/node"
+# HTTP self-registration endpoint on Main.
+# When this is set instead of main_server_url, Node POSTs to Main and Main
+# will connect back to Node at /ws/main.
 main_register_url = ""
+# Stable machine-readable node ID shown to Main.
+# Leave empty to auto-derive from hostname.
 id = ""
+# Human-readable node display name shown in the UI.
 name = ""
+# Shared secret that must match one of main.node_register_tokens.
 register_token = ""
+# Optional labels for UI grouping / machine metadata.
 labels = []
+# Declared providers available on this Node.
 capabilities = ["claude", "codex"]
 # Optional public address override for when Main should route back to this Node
 # via a different host/port than the Node process sees locally.
@@ -25,15 +44,21 @@ advertise_host = ""
 advertise_port = 0
 
 [filesystem]
+# Safety guardrail for maximum file tree nodes returned to the UI.
 file_tree_max_nodes = 2500
+# Maximum recursive depth for file tree expansion.
 file_tree_max_depth = 6
 
 [terminal]
+# Default shell used by the built-in terminal on this Node.
 default_shell = "/bin/bash"
 
 [providers.claude]
+# Max wait time for a Claude tool approval response before timeout.
 tool_approval_timeout_ms = 55000
+# Claude context window hint used for budgeting/UX.
 context_window = 160000
 
 [providers.codex]
+# Max wait time for a Codex tool approval response before timeout.
 tool_approval_timeout_ms = 55000
