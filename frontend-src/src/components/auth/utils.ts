@@ -13,5 +13,5 @@ export function resolveApiErrorMessage(payload: ApiErrorPayload | null, fallback
     return fallback;
   }
 
-  return payload.error ?? payload.message ?? fallback;
+  return payload.error ?? payload.message ?? payload.detail ?? fallback;
 }

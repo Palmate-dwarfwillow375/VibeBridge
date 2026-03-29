@@ -12,6 +12,7 @@ import type {
 } from '../types/types';
 
 export const SETTINGS_MAIN_TABS: SettingsMainTab[] = [
+  'account',
   'agents',
   'appearance',
   'git',

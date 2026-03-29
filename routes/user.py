@@ -93,3 +93,4 @@ async def onboarding_status(request: Request, _=Depends(authenticate_token)):
     except Exception as e:
         print(f"Error checking onboarding status: {e}")
         raise HTTPException(500, "Failed to check onboarding status")
+

@@ -161,23 +161,33 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const response = await api.auth.register(username, password);
         const payload = await parseJsonSafely<AuthSessionPayload>(response);
 
-        if (!response.ok || !payload?.token || !payload.user) {
+        if (!response.ok || !payload?.user) {
           const message = resolveApiErrorMessage(payload, AUTH_ERROR_MESSAGES.registrationFailed);
           setError(message);
           return { success: false, error: message };
         }
 
-        setSession(payload.user, payload.token);
+        if (payload.token) {
+          setSession(payload.user, payload.token);
+          setNeedsSetup(false);
+          await checkOnboardingStatus();
+          return { success: true, message: payload.message || undefined };
+        }
+
         setNeedsSetup(false);
-        await checkOnboardingStatus();
-        return { success: true };
+        clearSession();
+        return {
+          success: true,
+          message: payload.message || 'Registration submitted and awaiting approval.',
+          pendingApproval: Boolean(payload.pendingApproval),
+        };
       } catch (caughtError) {
         console.error('Registration error:', caughtError);
         setError(AUTH_ERROR_MESSAGES.networkError);
         return { success: false, error: AUTH_ERROR_MESSAGES.networkError };
       }
     },
-    [checkOnboardingStatus, setSession],
+    [checkOnboardingStatus, clearSession, setSession],
   );
 
   const logout = useCallback(() => {

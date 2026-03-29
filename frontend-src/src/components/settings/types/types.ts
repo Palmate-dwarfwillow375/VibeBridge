@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { ProviderThinkingEffort } from '../../../shared/providerSettings';
 
-export type SettingsMainTab = 'agents' | 'appearance' | 'git';
+export type SettingsMainTab = 'account' | 'agents' | 'appearance' | 'git';
 export type AgentProvider = 'claude' | 'codex';
 export type AgentCategory = 'account' | 'permissions' | 'mcp';
 export type ProjectSortOrder = 'name' | 'date';

@@ -2,7 +2,7 @@
   <img src="./frontend-src/public/logo-256.png" alt="VibeBridge logo" width="120" />
   <h1>VibeBridge</h1>
   <p>
-    用一个浏览器界面，统一管理一台或多台机器上的 Claude Code 与 Codex 会话。
+    用一个浏览器界面，统一管理多台机器上的 Claude Code 与 Codex 会话、终端与项目。
   </p>
 </div>
 
@@ -16,45 +16,39 @@
 
 ## 概览
 
-`VibeBridge` 是一个多节点浏览器控制面，用一个界面统一运行和管理一台或多台机器上的 `Claude Code` 与 `Codex`。
+`VibeBridge` 是一个面向多节点场景的 Web 控制台，用一个界面统一接入和管理运行在不同机器上的 `Claude Code` 与 `Codex`。
 
-## 聊天体验
+## 适用场景
 
-VibeBridge 的聊天界面不是把底层事件原样摊开，而是尽量让主消息流保持“答案优先”。
+VibeBridge 适合把 `Claude Code` / `Codex` 跑在本地机、远程开发机或多台服务器上的场景。它把分散的会话、节点和项目统一收进一个浏览器入口，减少在多个终端、多个窗口和多台机器之间来回切换的成本。
+
+## 核心特性
+
+- 用一个 Web 界面统一管理多台机器上的 Claude Code 和 Codex 会话
+- Main / Node 分离，浏览器只连接 Main，节点负责本地执行
+- 支持多用户注册、审批、角色权限和节点归属管理
+- 主消息流保持答案优先，中间过程可折叠查看
+- 更完整地恢复历史状态，包括 Codex 的 compact 历史
+- 支持 Node 直连 Main，或先注册再由 Main 主动回连
+
+## 多用户与节点归属
+
+VibeBridge 支持多用户注册、审批和基于角色的节点归属管理。每个已批准用户都有独立的 `node_register_token`，Node 使用该 token 注册后会自动归属到对应用户。
+
+- 第一个注册的账户会自动成为 `creator`（创建者）。
+- 后续注册账户默认是 `pending`（待批准），需要由 `creator` 或 `admin` 批准后才能登录。
+- `creator` 可以批准用户、调整 `admin / user / pending` 角色，并重置其他用户的节点 token。
+- `admin` 可以批准待审核用户，但不能修改角色。
+- `user` 只能访问自己名下的节点。
+
+## 会话展示与历史恢复
+
+VibeBridge 不会把底层事件原样摊在主消息流里，而是尽量让界面保持“答案优先”。
 
 - 每一轮对话都会突出最后一条正式回复，中间的工具调用、思考和 compact 过程会收进可折叠的过程区。
 - 没有明显中间过程的轮次不会出现空的过程容器，整体阅读会更干净。
 - 重新打开会话时，历史状态能更完整地恢复，包括 Codex 的 compact 历史。
 - Codex 会话对长输出的处理更稳定，整体使用感受会更接近 Codex app。
-
-## 架构
-
-```text
-Browser
-  -> Main Server (main_server.py)
-       - serve dist/
-       - auth + JWT
-       - node registry and routing
-       - browser WebSocket and shell relay
-  -> Node Server(s) (app.py)
-       - connect to Main
-       - run Claude Code / Codex locally
-       - expose local project, filesystem, shell, and Git APIs
-```
-
-浏览器只应该访问 Main，Node 负责执行，不应该被当成独立页面入口。
-
-## 连接方式
-
-### 1. Node 直连 Main WebSocket
-
-在 `configs/node.toml` 中设置 `node.main_server_url`。
-
-### 2. Node 先 HTTP 注册，再由 Main 主动回连
-
-在 `configs/node.toml` 中设置 `node.main_register_url`。
-
-如果两个配置同时存在，当前实现会优先使用直连 WebSocket。若 Main 回连 Node 需要使用不同地址，可设置 `node.advertise_host` 和 `node.advertise_port`。
 
 <a id="quick-start"></a>
 
@@ -101,90 +95,57 @@ python app.py
 http://127.0.0.1:4457/
 ```
 
-如果数据库为空，第一次访问会进入注册流程。
+如果数据库为空，第一次访问进入注册流程后，首个注册用户会成为 `creator`。后续注册用户默认进入 `pending` 状态，需要由 `creator` 或 `admin` 批准后才能登录。
 
-## 配置说明
+## 架构
+
+```text
+Browser
+  -> Main Server (main_server.py)
+       - serve dist/
+       - auth + JWT
+       - node registry and routing
+       - browser WebSocket and shell relay
+  -> Node Server(s) (app.py)
+       - connect to Main
+       - run Claude Code / Codex locally
+       - expose local project, filesystem, shell, and Git APIs
+```
+
+浏览器只连接 Main，Node 负责本地执行，不应作为独立页面入口。这种设计更适合多节点接入、统一认证和集中管理。
+
+## 连接方式
+
+### 模式 1：Node 主动连接 Main WebSocket
+
+在 `configs/node.toml` 中设置 `node.main_server_url`。
+
+### 模式 2：Node 先 HTTP 注册，再由 Main 主动回连
+
+在 `configs/node.toml` 中设置 `node.main_register_url`。
+
+如果两个配置同时存在，当前实现会优先使用直连 WebSocket。若 Main 回连 Node 需要使用不同地址，可设置 `node.advertise_host` 和 `node.advertise_port`。
+
+## 常用配置说明
 
 | 文件或键 | 作用角色 | 说明 |
 | --- | --- | --- |
-| `configs/main.toml` | Main | Main 运行配置 |
-| `configs/node.toml` | Node | Node 运行配置 |
+| `configs/main.toml` | Main | Main 运行配置文件；示例只保留最小必需项 |
+| `configs/node.toml` | Node | Node 运行配置文件；示例同时展示直连和 HTTP 注册两种模式 |
 | `server.host` / `server.port` | Main / Node | 监听地址和端口 |
-| `database.path` | Main / Node | SQLite 数据库路径 |
-| `auth.jwt_secret` | Main | JWT 密钥；未设置时会自动生成并保存 |
-| `main.node_register_tokens` | Main | 允许节点注册的 token 列表 |
-| `main.node_addresses` | Main | Main 启动后主动连接的节点地址 |
+| `database.path` | Main / Node | SQLite 数据库路径；Main 和 Node 建议分开 |
 | `node.main_server_url` | Node | 直连 Main 的 WebSocket 地址 |
 | `node.main_register_url` | Node | 供 Main 回连模式使用的 HTTP 注册地址 |
-| `node.id` / `node.name` | Node | 节点稳定标识和显示名称 |
-| `node.register_token` | Node | 节点注册 token |
+| `node.register_token` | Node | 用户级节点注册 token；决定节点归属 |
+| `node.id` / `node.name` | Node | 节点稳定标识和显示名称；留空时可按主机名自动派生 |
 | `node.labels` / `node.capabilities` | Node | 节点标签和能力声明 |
-| `node.advertise_host` / `node.advertise_port` | Node | 指定 Main 回连该 Node 时应使用的地址 |
+| `node.advertise_host` / `node.advertise_port` | Node | HTTP 注册模式下供 Main 回连使用的地址覆盖 |
+| `auth.platform_mode` | Node | 可选的节点本地免登录模式；常规 Main + Node 部署通常不需要改 |
 | `filesystem.*` | Node | 文件浏览限制 |
 | `terminal.default_shell` | Node | 内置终端默认 shell |
-| `providers.claude.*` / `providers.codex.*` | Node | Provider 相关超时和限制 |
+| `providers.claude.*` / `providers.codex.*` | Node | Provider 相关超时、上下文和限制 |
 
-## 目录结构
-
-```text
-VibeBridge/
-├── app.py
-├── main_server.py
-├── config.py
-├── configs/
-├── database/
-├── main/
-├── middleware/
-├── providers/
-├── routes/
-├── ws/
-├── frontend-src/
-└── dist/
-```
-
-建议先从这些文件读起：
-
-- `main_server.py`
-- `app.py`
-- `node_connector.py`
-- `main/browser_gateway.py`
-- `providers/claude_sdk.py`
-- `providers/codex_mcp.py`
-
-## Provider
-
-### Claude
-
-- 实现文件：`providers/claude_sdk.py`
-- 走真实 Python SDK 链路
-- 依赖：`claude-agent-sdk`
-
-### Codex
-
-- 实现文件：`providers/codex_mcp.py`
-- 优先使用 `codex mcp-server`
-- MCP 初始化失败时会回退到 `codex exec --json`
-- 重载旧会话时可以恢复 compact 历史
-- 节点机器上需要可用的 `codex` CLI
-
-## 验证方式
-
-Main:
-
-```bash
-curl -sf http://<main-host>:4457/health
-```
-
-Node:
-
-```bash
-curl -sf http://<node-host>:4456/health
-```
-
-## 备注
-
-- 仓库里已经带了 `dist/`，只有前端代码变更时才需要重新构建。
-- `Dockerfile` 当前只覆盖 Node 角色。
+项目仍保留 `main.node_addresses`、`main.node_register_tokens` 等兼容性高级选项，但在当前推荐的多用户部署里通常不需要配置。
 
 <a id="acknowledgements"></a>
 

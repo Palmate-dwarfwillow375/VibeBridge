@@ -186,6 +186,10 @@ class OutboundConnector:
                 if msg["type"] == MESSAGE_TYPES["REGISTER_INFO"]:
                     payload = msg.get("payload", {})
                     resolved_id = msg.get("nodeId") or registered_node_id
+                    owner = None
+                    token = conn.get("token", "")
+                    if self.node_ws_server.token_resolver:
+                        owner = self.node_ws_server.token_resolver(token)
 
                     if resolved_id != registered_node_id:
                         conn_data = self.connections.pop(registered_node_id, None)
@@ -204,6 +208,9 @@ class OutboundConnector:
                         "advertisePort": payload.get("advertisePort") or conn["port"],
                         "host": conn["host"],
                         "explicitPort": conn["port"],
+                        "ownerUserId": owner.get("id") if isinstance(owner, dict) else None,
+                        "ownerUsername": owner.get("username") if isinstance(owner, dict) else None,
+                        "ownerRole": owner.get("role", "user") if isinstance(owner, dict) else "admin",
                     })
                     conn["reconnect_delay"] = INITIAL_RECONNECT_DELAY
                     print(f"[Main] Node {resolved_id} registered via outbound")

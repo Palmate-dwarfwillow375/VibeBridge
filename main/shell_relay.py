@@ -15,7 +15,7 @@ class ShellRelay:
         self.registry = registry
         self.node_token = (node_tokens or [""])[0] if node_tokens else ""
 
-    async def handle_connection(self, browser_ws: WebSocket):
+    async def handle_connection(self, browser_ws: WebSocket, user: dict | None = None):
         """Handle a browser /shell WebSocket connection.
 
         Intercepts the first message (init) to determine which node to connect to,
@@ -67,7 +67,7 @@ class ShellRelay:
 
                 node_id = data.get("nodeId")
                 if not node_id:
-                    nodes = self.registry.get_all_nodes()
+                    nodes = self.registry.get_all_nodes(user)
                     online = next((n for n in nodes if n["status"] == "online"), None)
                     if online:
                         node_id = online["nodeId"]
@@ -80,14 +80,15 @@ class ShellRelay:
                     await browser_ws.close()
                     return
 
-                addr = self.registry.get_node_address(node_id)
-                if not addr:
+                node = self.registry.get_node_for_user(node_id, user)
+                if not node:
                     await browser_ws.send_json({
                         "type": "output",
                         "data": f"\x1b[31mError: Node \"{node_id}\" is unavailable\x1b[0m\r\n",
                     })
                     await browser_ws.close()
                     return
+                addr = self.registry.get_node_address(node_id)
 
                 token_param = f"?token={self.node_token}" if self.node_token else ""
                 node_url = f"ws://{addr['host']}:{addr['port']}/shell{token_param}"

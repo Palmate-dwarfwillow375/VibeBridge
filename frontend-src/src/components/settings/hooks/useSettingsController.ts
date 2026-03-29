@@ -87,7 +87,7 @@ type McpToolsResponse = {
 
 type ActiveLoginProvider = CliProvider | '';
 
-const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git'];
+const KNOWN_MAIN_TABS: SettingsMainTab[] = ['account', 'agents', 'appearance', 'git'];
 
 const normalizeMainTab = (tab: string): SettingsMainTab => {
   // Keep backwards compatibility with older callers and local state that still

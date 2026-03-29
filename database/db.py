@@ -48,6 +48,8 @@ db.commit()
 
 print(f"[INFO] Database: {DB_PATH}")
 
+VALID_USER_ROLES = {"creator", "admin", "user", "pending"}
+
 
 # ---------------------------------------------------------------------------
 # Migrations
@@ -61,6 +63,8 @@ def _run_migrations():
         ("git_name", "ALTER TABLE users ADD COLUMN git_name TEXT"),
         ("git_email", "ALTER TABLE users ADD COLUMN git_email TEXT"),
         ("has_completed_onboarding", "ALTER TABLE users ADD COLUMN has_completed_onboarding BOOLEAN DEFAULT 0"),
+        ("role", "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"),
+        ("node_register_token", "ALTER TABLE users ADD COLUMN node_register_token TEXT"),
     ]:
         if col not in columns:
             print(f"Running migration: Adding {col} column")
@@ -82,6 +86,32 @@ def _run_migrations():
         UNIQUE(session_id, provider)
     )""")
     db.execute("CREATE INDEX IF NOT EXISTS idx_session_names_lookup ON session_names(session_id, provider)")
+
+    db.execute("UPDATE users SET role = 'pending' WHERE role IS NULL OR TRIM(role) = ''")
+    db.execute(
+        "UPDATE users SET role = 'pending' WHERE role NOT IN ('creator', 'admin', 'user', 'pending')"
+    )
+
+    existing_users = db.execute(
+        "SELECT id, role, node_register_token FROM users ORDER BY id ASC"
+    ).fetchall()
+    creator_exists = any(row["role"] == "creator" for row in existing_users)
+    first_user_id = existing_users[0]["id"] if existing_users else None
+    if first_user_id is not None and not creator_exists:
+        db.execute("UPDATE users SET role = 'creator' WHERE id = ?", (first_user_id,))
+
+    seen_tokens: set[str] = set()
+    for row in existing_users:
+        token = (row["node_register_token"] or "").strip()
+        if not token or token in seen_tokens:
+            token = UserDb.generate_node_register_token()
+            db.execute(
+                "UPDATE users SET node_register_token = ? WHERE id = ?",
+                (token, row["id"]),
+            )
+        seen_tokens.add(token)
+
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_node_register_token ON users(node_register_token)")
     db.commit()
     print("Database migrations completed successfully")
 
@@ -99,18 +129,32 @@ def initialize_database():
 
 class UserDb:
     @staticmethod
+    def generate_node_register_token() -> str:
+        return secrets.token_hex(24)
+
+    @staticmethod
     def has_users() -> bool:
         row = db.execute("SELECT COUNT(*) as count FROM users").fetchone()
         return row["count"] > 0
 
     @staticmethod
     def create_user(username: str, password_hash: str) -> dict:
+        role = "creator" if not UserDb.has_users() else "pending"
+        node_register_token = UserDb.generate_node_register_token()
         cursor = db.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, password_hash),
+            "INSERT INTO users (username, password_hash, role, node_register_token) VALUES (?, ?, ?, ?)",
+            (username, password_hash, role, node_register_token),
         )
         db.commit()
-        return {"id": cursor.lastrowid, "username": username}
+        created = UserDb.get_user_by_id(cursor.lastrowid)
+        if created:
+            return created
+        return {
+            "id": cursor.lastrowid,
+            "username": username,
+            "role": role,
+            "node_register_token": node_register_token,
+        }
 
     @staticmethod
     def get_user_by_username(username: str) -> Optional[dict]:
@@ -118,6 +162,29 @@ class UserDb:
             "SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)
         ).fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def is_approved_role(role: str | None) -> bool:
+        return role in {"creator", "admin", "user"}
+
+    @staticmethod
+    def get_user_by_node_register_token(token: str) -> Optional[dict]:
+        row = db.execute(
+            "SELECT * FROM users WHERE node_register_token = ? AND is_active = 1",
+            (token,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def list_users() -> list[dict]:
+        rows = db.execute(
+            """
+            SELECT id, username, role, node_register_token, created_at, last_login, is_active, has_completed_onboarding
+            FROM users
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     @staticmethod
     def update_last_login(user_id: int):
@@ -130,7 +197,12 @@ class UserDb:
     @staticmethod
     def get_user_by_id(user_id: int) -> Optional[dict]:
         row = db.execute(
-            "SELECT id, username, created_at, last_login FROM users WHERE id = ? AND is_active = 1",
+            """
+            SELECT id, username, role, node_register_token, created_at, last_login, is_active,
+                   git_name, git_email, has_completed_onboarding
+            FROM users
+            WHERE id = ? AND is_active = 1
+            """,
             (user_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -146,7 +218,12 @@ class UserDb:
         the Node database.
         """
         existing_by_id = db.execute(
-            "SELECT id, username, created_at, last_login FROM users WHERE id = ?",
+            """
+            SELECT id, username, role, node_register_token, created_at, last_login, is_active,
+                   git_name, git_email, has_completed_onboarding
+            FROM users
+            WHERE id = ?
+            """,
             (user_id,),
         ).fetchone()
         if existing_by_id:
@@ -162,7 +239,12 @@ class UserDb:
             return dict(existing_by_id)
 
         existing_by_username = db.execute(
-            "SELECT id, username, created_at, last_login FROM users WHERE username = ?",
+            """
+            SELECT id, username, role, node_register_token, created_at, last_login, is_active,
+                   git_name, git_email, has_completed_onboarding
+            FROM users
+            WHERE username = ?
+            """,
             (username,),
         ).fetchone()
         if existing_by_username:
@@ -177,8 +259,11 @@ class UserDb:
             return dict(existing_by_username)
 
         db.execute(
-            "INSERT INTO users (id, username, password_hash, is_active) VALUES (?, ?, ?, 1)",
-            (user_id, username, "__shadow_user_from_main__"),
+            """
+            INSERT INTO users (id, username, password_hash, is_active, role, node_register_token)
+            VALUES (?, ?, ?, 1, 'user', ?)
+            """,
+            (user_id, username, "__shadow_user_from_main__", UserDb.generate_node_register_token()),
         )
         db.commit()
         created = UserDb.get_user_by_id(user_id)
@@ -189,9 +274,38 @@ class UserDb:
     @staticmethod
     def get_first_user() -> Optional[dict]:
         row = db.execute(
-            "SELECT id, username, created_at, last_login FROM users WHERE is_active = 1 LIMIT 1"
+            """
+            SELECT id, username, role, node_register_token, created_at, last_login, is_active,
+                   git_name, git_email, has_completed_onboarding
+            FROM users
+            WHERE is_active = 1
+            ORDER BY id ASC
+            LIMIT 1
+            """
         ).fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def update_role(user_id: int, role: str) -> bool:
+        if role not in VALID_USER_ROLES:
+            return False
+        cursor = db.execute(
+            "UPDATE users SET role = ? WHERE id = ?",
+            (role, user_id),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def rotate_node_register_token(user_id: int) -> Optional[str]:
+        token = UserDb.generate_node_register_token()
+        db.execute(
+            "UPDATE users SET node_register_token = ? WHERE id = ?",
+            (token, user_id),
+        )
+        db.commit()
+        refreshed = UserDb.get_user_by_id(user_id)
+        return refreshed.get("node_register_token") if refreshed else token
 
     @staticmethod
     def update_git_config(user_id: int, git_name: str, git_email: str):

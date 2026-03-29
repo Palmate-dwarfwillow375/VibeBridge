@@ -11,21 +11,3 @@ port = 4457
 # SQLite file used by Main for auth/user state and other main-side metadata.
 # Relative paths are resolved from the repo root.
 path = "database/auth.db"
-
-[auth]
-# Single-user convenience mode. When true, Main skips normal login flow
-# and uses the first user in the database.
-platform_mode = false
-# JWT signing secret for browser auth tokens.
-# Leave empty to auto-generate and persist one on first start.
-jwt_secret = ""
-
-[main]
-# Allowed node registration tokens.
-# For direct WS mode, node.register_token must match one of these values.
-# For HTTP registration mode, the posted token must also match.
-node_register_tokens = []
-# Optional node addresses for Main-initiated reverse WS connections.
-# Format: ["node-id@host:port", "host:port"].
-# Only needed when Main should connect out to Nodes at /ws/main.
-node_addresses = []

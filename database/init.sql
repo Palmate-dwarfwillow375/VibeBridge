@@ -1,7 +1,7 @@
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
 
--- Users table (single user system)
+-- Users table
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_login DATETIME,
     is_active BOOLEAN DEFAULT 1,
+    role TEXT NOT NULL DEFAULT 'pending',
+    node_register_token TEXT UNIQUE,
     git_name TEXT,
     git_email TEXT,
     has_completed_onboarding BOOLEAN DEFAULT 0

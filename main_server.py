@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from database.db import initialize_database
+from database.db import user_db
 from middleware.auth import authenticate_token, authenticate_websocket
 from main.node_registry import NodeRegistry
 from main.node_ws_server import NodeWsServer
@@ -32,6 +33,7 @@ from main.browser_gateway import create_browser_gateway
 from main.ws_relay import WsRelay
 from main.shell_relay import ShellRelay
 from node_protocol import NODE_ACTIONS, create_request
+from routes.account import router as account_router, admin_router as admin_router
 from routes.auth import router as auth_router
 from config import (
     PORT,
@@ -45,9 +47,19 @@ from config import (
 # Parse tokens
 _tokens = NODE_REGISTER_TOKENS_LIST
 
+
+def _resolve_node_owner(token: str) -> dict | None:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return None
+    user = user_db.get_user_by_node_register_token(normalized)
+    if user and user_db.is_approved_role(user.get("role")):
+        return user
+    return None
+
 # Create components
 registry = NodeRegistry()
-node_ws_server = NodeWsServer(registry, _tokens)
+node_ws_server = NodeWsServer(registry, _tokens, token_resolver=_resolve_node_owner)
 outbound_connector = OutboundConnector(registry, node_ws_server, _tokens)
 node_ws_server.attach_outbound_connector(outbound_connector)
 ws_relay = WsRelay(registry, node_ws_server)
@@ -80,6 +92,8 @@ async def health():
 # ---------------------------------------------------------------------------
 
 app.include_router(auth_router)
+app.include_router(account_router)
+app.include_router(admin_router)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +107,9 @@ async def register_node(request: Request):
     host = (body.get("host") or body.get("advertiseHost") or (request.client.host if request.client else "")).strip()
     port = body.get("advertisePort") or body.get("port")
 
-    if _tokens and token not in _tokens:
+    owner = _resolve_node_owner(token)
+    legacy_token_allowed = bool(_tokens and token in _tokens)
+    if owner is None and not legacy_token_allowed:
         raise HTTPException(403, "Invalid token")
     if not host or not port:
         raise HTTPException(400, "host and port are required")
@@ -110,10 +126,16 @@ async def register_node(request: Request):
     if is_new_target:
         print(f"[Main] Node registered via HTTP callback: {addr}")
     outbound_connector.start(addr, {node_id: token})
+    record = registry.get_node(node_id)
+    if record:
+        record["ownerUserId"] = owner.get("id") if owner else None
+        record["ownerUsername"] = owner.get("username") if owner else None
+        record["ownerRole"] = owner.get("role", "user") if owner else "admin"
     return {
         "success": True,
         "mode": "main-outbound",
         "nodeId": node_id,
+        "ownerUserId": owner.get("id") if owner else None,
         "message": f"Will connect to {node_id} at {host}:{port}",
     }
 
@@ -169,6 +191,8 @@ async def _proxy_request_via_node_ws(request: Request, node_id: str, decoded: di
     fwd_headers["x-authenticated-user-id"] = str(decoded["userId"])
     if decoded.get("username"):
         fwd_headers["x-authenticated-username"] = str(decoded["username"])
+    if decoded.get("role"):
+        fwd_headers["x-authenticated-role"] = str(decoded["role"])
 
     message, request_id = create_request(
         node_id,
@@ -247,11 +271,17 @@ async def proxy_middleware(request: Request, call_next):
     decoded = _verify_token(token)
     if not decoded:
         return Response(content='{"detail":"Invalid token"}', status_code=403, media_type="application/json")
+    if not decoded.get("role"):
+        user = user_db.get_user_by_id(decoded["userId"])
+        if user and user.get("role"):
+            decoded["role"] = user["role"]
+        else:
+            decoded["role"] = "user"
 
     # Resolve node
     node_id = request.headers.get("x-node-id")
     if not node_id:
-        nodes = registry.get_all_nodes()
+        nodes = registry.get_all_nodes({"id": decoded["userId"], "role": decoded.get("role", "user")})
         if len(nodes) == 1:
             node_id = nodes[0]["nodeId"]
         elif len(nodes) == 0:
@@ -259,7 +289,12 @@ async def proxy_middleware(request: Request, call_next):
         else:
             return Response(content='{"detail":"X-Node-Id header required"}', status_code=400, media_type="application/json")
 
-    node = registry.get_node(node_id)
+    current_user = {
+        "id": decoded["userId"],
+        "username": decoded.get("username"),
+        "role": decoded.get("role", "user"),
+    }
+    node = registry.get_node_for_user(node_id, current_user)
     if not node:
         return Response(content=f'{{"detail":"Node {node_id} unavailable"}}', status_code=503, media_type="application/json")
     return await _proxy_request_via_node_ws(request, node_id, decoded)
@@ -284,7 +319,7 @@ async def ws_browser(ws: WebSocket):
     if not user:
         await ws.close(4003, "Authentication failed")
         return
-    await ws_relay.handle_connection(ws)
+    await ws_relay.handle_connection(ws, user)
 
 
 @app.websocket("/shell")
@@ -295,7 +330,7 @@ async def ws_shell(ws: WebSocket):
     if not user:
         await ws.close(4003, "Authentication failed")
         return
-    await shell_relay.handle_connection(ws)
+    await shell_relay.handle_connection(ws, user)
 
 
 # ---------------------------------------------------------------------------

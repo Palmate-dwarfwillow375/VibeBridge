@@ -28,12 +28,9 @@ async def register(body: AuthRequest):
         raise HTTPException(400, "Username must be at least 3 characters, password at least 6 characters")
 
     try:
-        if user_db.has_users():
-            raise HTTPException(403, "User already exists. This is a single-user system.")
-
         password_hash = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt(12)).decode()
         user = user_db.create_user(body.username, password_hash)
-        token = generate_token(user)
+        token = generate_token(user) if user_db.is_approved_role(user.get("role")) else None
     except HTTPException:
         raise
     except Exception as e:
@@ -41,8 +38,15 @@ async def register(body: AuthRequest):
             raise HTTPException(409, "Username already exists")
         raise HTTPException(500, "Internal server error")
 
-    user_db.update_last_login(user["id"])
-    return {"success": True, "user": {"id": user["id"], "username": user["username"]}, "token": token}
+    if token:
+        user_db.update_last_login(user["id"])
+    return {
+        "success": True,
+        "user": {"id": user["id"], "username": user["username"], "role": user.get("role", "user")},
+        "pendingApproval": user.get("role") == "pending",
+        "message": "Registration submitted. An administrator must approve your account before you can sign in." if user.get("role") == "pending" else None,
+        "token": token,
+    }
 
 
 @router.post("/login")
@@ -54,12 +58,19 @@ async def login(body: AuthRequest):
     if not user:
         raise HTTPException(401, "Invalid username or password")
 
+    if user.get("role") == "pending":
+        raise HTTPException(403, "Your registration is pending administrator approval")
+
     if not bcrypt.checkpw(body.password.encode(), user["password_hash"].encode()):
         raise HTTPException(401, "Invalid username or password")
 
     token = generate_token(user)
     user_db.update_last_login(user["id"])
-    return {"success": True, "user": {"id": user["id"], "username": user["username"]}, "token": token}
+    return {
+        "success": True,
+        "user": {"id": user["id"], "username": user["username"], "role": user.get("role", "user")},
+        "token": token,
+    }
 
 
 @router.get("/user")

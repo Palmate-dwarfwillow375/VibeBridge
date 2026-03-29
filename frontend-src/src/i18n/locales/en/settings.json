@@ -100,6 +100,7 @@
   },
   "mainTabs": {
     "label": "Settings",
+    "account": "Account",
     "agents": "Agents",
     "appearance": "Appearance",
     "git": "Git",
@@ -141,6 +142,23 @@
         "description": "Editor font size in pixels"
       }
     }
+  },
+  "accountSettings": {
+    "title": "Account & Node Token",
+    "description": "Each user gets a dedicated node registration token.",
+    "loading": "Loading…",
+    "username": "Username",
+    "role": "Role",
+    "nodeToken": "Node Register Token",
+    "copy": "Copy",
+    "rotate": "Rotate Token",
+    "approve": "Approve",
+    "actions": "Actions",
+    "userAdminTitle": "User Management",
+    "userAdminDescription": "User management",
+    "creatorDescription": "Creators can approve users, promote admins, and rotate user node tokens.",
+    "adminDescription": "Admins can approve pending users, but cannot change roles.",
+    "pendingNotice": "Your account is waiting for approval from an admin or the creator."
   },
   "mcpForm": {
     "title": {

@@ -20,6 +20,7 @@ def generate_token(user: dict) -> str:
     payload = {
         "userId": user["id"],
         "username": user["username"],
+        "role": user.get("role", "user"),
         "iat": now,
         "exp": now + 7 * 24 * 3600,  # 7 days
     }
@@ -45,12 +46,16 @@ async def authenticate_token(
     if MAIN_SERVER_URL or MAIN_REGISTER_URL:
         forwarded_user_id = request.headers.get("x-authenticated-user-id")
         forwarded_username = request.headers.get("x-authenticated-username")
+        forwarded_role = request.headers.get("x-authenticated-role")
 
         if forwarded_user_id and forwarded_username:
             try:
                 user = user_db.ensure_shadow_user(int(forwarded_user_id), forwarded_username)
             except ValueError as exc:
                 raise HTTPException(400, "Invalid forwarded user context") from exc
+
+            if forwarded_role in {"creator", "admin", "user", "pending"} and user.get("role") != forwarded_role:
+                user["role"] = forwarded_role
 
             request.state.user = user
             return user
@@ -103,7 +108,7 @@ def authenticate_websocket(token: Optional[str]) -> Optional[dict]:
     if IS_PLATFORM:
         user = user_db.get_first_user()
         if user:
-            return {"userId": user["id"], "username": user["username"]}
+            return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
         return None
 
     if not token:
@@ -116,4 +121,25 @@ def authenticate_websocket(token: Optional[str]) -> Optional[dict]:
     user = user_db.get_user_by_id(decoded["userId"])
     if not user:
         return None
-    return {"userId": user["id"], "username": user["username"]}
+    return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
+
+
+def require_admin(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+    return user
+
+
+def require_staff(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") not in {"creator", "admin"}:
+        raise HTTPException(403, "Staff access required")
+    return user
+
+
+def require_creator(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "creator":
+        raise HTTPException(403, "Creator access required")
+    return user

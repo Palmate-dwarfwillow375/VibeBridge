@@ -17,7 +17,7 @@ class WsRelay:
         self.node_ws_server = node_ws_server
         self.browser_clients: set[WebSocket] = set()
 
-    async def handle_connection(self, ws: WebSocket):
+    async def handle_connection(self, ws: WebSocket, user: dict | None = None):
         """Handle a new browser WebSocket connection."""
         await ws.accept()
         self.browser_clients.add(ws)
@@ -59,6 +59,9 @@ class WsRelay:
                     continue
 
                 target_node = data.get("nodeId")
+                if target_node and not self.registry.get_node_for_user(target_node, user):
+                    await self._send(ws, {"type": "error", "error": "Node not found"})
+                    continue
                 if target_node and target_node != current_node_id:
                     _setup_node_listener(target_node)
 

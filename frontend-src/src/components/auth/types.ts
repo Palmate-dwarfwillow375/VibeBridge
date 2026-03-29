@@ -6,13 +6,18 @@ export type AuthUser = {
   [key: string]: unknown;
 };
 
-export type AuthActionResult = { success: true } | { success: false; error: string };
+export type AuthActionResult =
+  | { success: true; message?: string; pendingApproval?: boolean }
+  | { success: false; error: string };
 
 export type AuthSessionPayload = {
+  success?: boolean;
   token?: string;
   user?: AuthUser;
   error?: string;
   message?: string;
+  detail?: string;
+  pendingApproval?: boolean;
 };
 
 export type AuthStatusPayload = {
@@ -30,6 +35,7 @@ export type OnboardingStatusPayload = {
 export type ApiErrorPayload = {
   error?: string;
   message?: string;
+  detail?: string;
 };
 
 export type AuthContextValue = {

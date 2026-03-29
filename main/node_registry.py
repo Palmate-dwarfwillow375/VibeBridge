@@ -87,6 +87,9 @@ class NodeRegistry:
         record = {
             "nodeId": node_id,
             "displayName": info.get("displayName") or info.get("nodeName") or node_id,
+            "ownerUserId": info.get("ownerUserId"),
+            "ownerUsername": info.get("ownerUsername"),
+            "ownerRole": info.get("ownerRole", "user"),
             "status": NODE_STATUS_ONLINE,
             "version": info.get("version", "unknown"),
             "capabilities": info.get("capabilities", []),
@@ -122,9 +125,21 @@ class NodeRegistry:
     def get_node(self, node_id: str) -> dict | None:
         return self.nodes.get(node_id)
 
-    def get_all_nodes(self) -> list[dict]:
+    @staticmethod
+    def _can_user_access_node(user: dict | None, record: dict) -> bool:
+        if user is None:
+            return False
+        if user.get("role") in {"creator", "admin"}:
+            return True
+        owner_user_id = record.get("ownerUserId")
+        resolved_user_id = user.get("id", user.get("userId"))
+        return owner_user_id is not None and owner_user_id == resolved_user_id
+
+    def get_all_nodes(self, user: dict | None = None) -> list[dict]:
         result = []
         for r in self.nodes.values():
+            if user is not None and not self._can_user_access_node(user, r):
+                continue
             status = self._effective_status(r)
             if status != r.get("status"):
                 r["status"] = status
@@ -137,6 +152,8 @@ class NodeRegistry:
                 "version": r["version"],
                 "capabilities": r["capabilities"],
                 "labels": r["labels"],
+                "ownerUserId": r.get("ownerUserId"),
+                "ownerUsername": r.get("ownerUsername"),
                 "host": host,
                 "port": port,
                 "connectedAt": r["connectedAt"],
@@ -158,6 +175,14 @@ class NodeRegistry:
         if status != record.get("status"):
             record["status"] = status
         return status == NODE_STATUS_ONLINE
+
+    def get_node_for_user(self, node_id: str, user: dict | None) -> dict | None:
+        record = self.nodes.get(node_id)
+        if not record:
+            return None
+        if not self._can_user_access_node(user, record):
+            return None
+        return record
 
     def get_node_address(self, node_id: str) -> dict | None:
         record = self.nodes.get(node_id)

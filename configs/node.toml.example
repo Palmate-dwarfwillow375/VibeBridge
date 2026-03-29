@@ -12,53 +12,55 @@ port = 4456
 # Relative paths are resolved from the repo root.
 path = "database/auth.db"
 
-[auth]
-# Single-user convenience mode for standalone/local use.
-platform_mode = false
-# JWT signing secret for direct node access.
-# Leave empty to auto-generate and persist one on first start.
-jwt_secret = ""
-
 [node]
-# Direct Node -> Main WebSocket target.
-# When this is set, Node connects to Main at /ws/node.
-main_server_url = "ws://127.0.0.1:4457/ws/node"
-# HTTP self-registration endpoint on Main.
-# When this is set instead of main_server_url, Node POSTs to Main and Main
-# will connect back to Node at /ws/main.
-main_register_url = ""
-# Stable machine-readable node ID shown to Main.
-# Leave empty to auto-derive from hostname.
+# Choose one of the two connection modes below.
+# 1) Direct WS mode: set main_server_url and leave main_register_url empty.
+# 2) HTTP registration mode: set main_register_url and leave main_server_url empty.
+
+# Shared identity / metadata fields.
+# Leave id and name empty to auto-derive from the local hostname if you do not care.
 id = ""
-# Human-readable node display name shown in the UI.
 name = ""
-# Shared secret that must match one of main.node_register_tokens.
 register_token = ""
-# Optional labels for UI grouping / machine metadata.
 labels = []
-# Declared providers available on this Node.
 capabilities = ["claude", "codex"]
-# Optional public address override for when Main should route back to this Node
-# via a different host/port than the Node process sees locally.
+
+# Mode 1: Direct Node -> Main WebSocket.
+# Example:
+# main_server_url = "ws://127.0.0.1:4457/ws/node"
+main_server_url = ""
+
+# Mode 2: HTTP registration + Main callback.
+# Example:
+# main_register_url = "http://127.0.0.1:4457/api/nodes/register"
+main_register_url = ""
+
+# Optional callback address override used by HTTP registration mode.
+# Set these when Main must connect back to a different host/port than the
+# node process sees locally.
 advertise_host = ""
 advertise_port = 0
 
+[auth]
+# Optional node-local auth settings.
+# In normal Main+Node deployments you can omit these and use defaults.
+platform_mode = false
+jwt_secret = ""
+
 [filesystem]
-# Safety guardrail for maximum file tree nodes returned to the UI.
+# Optional file tree limits for very large workspaces.
 file_tree_max_nodes = 2500
-# Maximum recursive depth for file tree expansion.
 file_tree_max_depth = 6
 
 [terminal]
-# Default shell used by the built-in terminal on this Node.
+# Optional shell override for the built-in terminal.
 default_shell = "/bin/bash"
 
 [providers.claude]
-# Max wait time for a Claude tool approval response before timeout.
+# Optional Claude tuning.
 tool_approval_timeout_ms = 55000
-# Claude context window hint used for budgeting/UX.
 context_window = 160000
 
 [providers.codex]
-# Max wait time for a Codex tool approval response before timeout.
+# Optional Codex tuning.
 tool_approval_timeout_ms = 55000

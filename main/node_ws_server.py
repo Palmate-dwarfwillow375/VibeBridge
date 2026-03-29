@@ -15,9 +15,10 @@ REGISTER_TIMEOUT = 10  # seconds
 
 
 class NodeWsServer:
-    def __init__(self, registry, allowed_tokens: list[str] | None = None):
+    def __init__(self, registry, allowed_tokens: list[str] | None = None, token_resolver: Callable | None = None):
         self.registry = registry
         self.allowed_tokens = allowed_tokens or []
+        self.token_resolver = token_resolver
         self._message_listeners: dict[str, set[Callable]] = {}
         self._outbound_connector = None
 
@@ -65,7 +66,8 @@ class NodeWsServer:
                     payload = msg.get("payload", {})
                     token = payload.get("token", "")
 
-                    if not self._validate_token(token):
+                    owner = self._resolve_owner(token)
+                    if owner is False:
                         await _send(create_message(MESSAGE_TYPES["ERROR"], None, {"error": "Invalid token"}))
                         await ws.close(4003, "Invalid token")
                         break
@@ -86,6 +88,9 @@ class NodeWsServer:
                         "advertisePort": payload.get("advertisePort"),
                         "host": payload.get("advertiseHost") or (ws.client.host if ws.client else None),
                         "explicitPort": payload.get("advertisePort") or payload.get("port"),
+                        "ownerUserId": owner.get("id") if isinstance(owner, dict) else None,
+                        "ownerUsername": owner.get("username") if isinstance(owner, dict) else None,
+                        "ownerRole": owner.get("role", "user") if isinstance(owner, dict) else "admin",
                     })
 
                     registered = True
@@ -193,10 +198,16 @@ class NodeWsServer:
                 except Exception:
                     pass
 
-    def _validate_token(self, token: str) -> bool:
+    def _resolve_owner(self, token: str):
+        if self.token_resolver:
+            owner = self.token_resolver(token)
+            if owner:
+                return owner
         if not self.allowed_tokens:
-            return True
-        return token in self.allowed_tokens
+            return {}
+        if token in self.allowed_tokens:
+            return {}
+        return False
 
     async def _send_message(self, ws, message: dict):
         """Send a JSON message to either an inbound FastAPI WS or outbound websockets client."""

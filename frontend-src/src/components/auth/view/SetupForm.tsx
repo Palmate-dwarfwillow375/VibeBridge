@@ -73,7 +73,7 @@ export default function SetupForm() {
     <AuthScreenLayout
       title="Welcome to VibeBridge"
       description="Set up your account to get started"
-      footerText="This is a single-user system. Only one account can be created."
+      footerText="The first account becomes the creator. Later accounts require approval."
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <AuthInputField
