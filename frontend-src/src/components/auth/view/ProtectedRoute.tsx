@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react';
+import { useEffect } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { useAuth } from '../context/AuthContext';
 import Onboarding from '../../onboarding/view/Onboarding';
 import AuthLoadingScreen from './AuthLoadingScreen';
 import LoginForm from './LoginForm';
 import SetupForm from './SetupForm';
+import { useOptionalNodes } from '../../../contexts/NodeContext';
 
 type ProtectedRouteProps = {
   children: ReactNode;
@@ -12,6 +14,16 @@ type ProtectedRouteProps = {
 
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, isLoading, needsSetup, hasCompletedOnboarding, refreshOnboardingStatus } = useAuth();
+  const nodeContext = useOptionalNodes();
+  const selectedNodeId = nodeContext?.selectedNodeId ?? null;
+
+  useEffect(() => {
+    if (!user || !selectedNodeId) {
+      return;
+    }
+
+    void refreshOnboardingStatus();
+  }, [refreshOnboardingStatus, selectedNodeId, user]);
 
   if (isLoading) {
     return <AuthLoadingScreen />;

@@ -18,28 +18,12 @@ from database.db import apply_custom_session_names, session_names_db
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
-FORBIDDEN_PATHS = [
-    "/", "/etc", "/bin", "/sbin", "/usr", "/dev", "/proc", "/sys",
-    "/var", "/boot", "/root", "/lib", "/lib64", "/opt", "/tmp", "/run",
-    "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)",
-    "C:\\ProgramData", "C:\\System Volume Information", "C:\\$Recycle.Bin",
-]
-
 
 async def validate_workspace_path(requested_path: str) -> dict:
-    """Validate that a path is safe for workspace operations."""
+    """Normalize and resolve a workspace path without hard-coded directory blocks."""
     try:
         absolute = os.path.abspath(requested_path)
         normalized = os.path.normpath(absolute)
-
-        if normalized in FORBIDDEN_PATHS or normalized == "/":
-            return {"valid": False, "error": "Cannot use system-critical directories as workspace locations"}
-
-        for forbidden in FORBIDDEN_PATHS:
-            if normalized == forbidden or normalized.startswith(forbidden + os.sep):
-                if forbidden == "/var" and (normalized.startswith("/var/tmp") or normalized.startswith("/var/folders")):
-                    continue
-                return {"valid": False, "error": f"Cannot create workspace in system directory: {forbidden}"}
 
         # Resolve symlinks
         if os.path.exists(absolute):
