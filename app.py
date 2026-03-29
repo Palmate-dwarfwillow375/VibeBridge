@@ -202,12 +202,12 @@ def _resolve_file_tree_max_depth(dir_path: Path) -> int:
         resolved = dir_path.resolve()
         home = Path(_HOME).resolve()
         if resolved == home:
-            return min(_FILE_TREE_MAX_DEPTH, 2)
+            return min(FILE_TREE_MAX_DEPTH, 2)
         if resolved == home.parent:
-            return min(_FILE_TREE_MAX_DEPTH, 1)
+            return min(FILE_TREE_MAX_DEPTH, 1)
     except Exception:
         pass
-    return _FILE_TREE_MAX_DEPTH
+    return FILE_TREE_MAX_DEPTH
 
 
 def _get_file_tree(
@@ -222,7 +222,7 @@ def _get_file_tree(
             "max_depth": _resolve_file_tree_max_depth(dir_path),
         }
 
-    if depth > state["max_depth"] or state["count"] >= _FILE_TREE_MAX_NODES:
+    if depth > state["max_depth"] or state["count"] >= FILE_TREE_MAX_NODES:
         return []
 
     result: list[dict] = []
@@ -232,7 +232,7 @@ def _get_file_tree(
         return result
 
     for entry in entries:
-        if state["count"] >= _FILE_TREE_MAX_NODES:
+        if state["count"] >= FILE_TREE_MAX_NODES:
             break
         if entry.name.startswith("."):
             continue
@@ -253,7 +253,7 @@ def _get_file_tree(
             if (
                 depth < state["max_depth"]
                 and entry.name not in _FILE_TREE_SKIP_DIR_NAMES
-                and state["count"] < _FILE_TREE_MAX_NODES
+                and state["count"] < FILE_TREE_MAX_NODES
             ):
                 node["children"] = _get_file_tree(entry, depth + 1, state)
             else:

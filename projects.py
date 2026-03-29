@@ -109,6 +109,21 @@ async def extract_project_directory(project_name: str) -> str:
     if project_name in _project_dir_cache:
         return _project_dir_cache[project_name]
 
+    # Resolve synthesized Codex-only project keys even when the project list
+    # endpoint has not been called yet in this process.
+    if project_name.startswith("codex-"):
+        try:
+            sessions_by_project = await _build_codex_sessions_index()
+            for project_path in sessions_by_project.keys():
+                normalized_project_path = _normalize_path(project_path)
+                if not normalized_project_path:
+                    continue
+                if _normalize_project_cache_key(normalized_project_path) == project_name:
+                    _project_dir_cache[project_name] = normalized_project_path
+                    return normalized_project_path
+        except Exception:
+            pass
+
     # Check config for originalPath (handles dashes in real path)
     raw_config = await load_project_config()
     config_by_name = {p.get("name", ""): p for p in raw_config.get("projects", [])}

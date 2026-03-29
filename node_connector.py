@@ -10,6 +10,7 @@ import random
 
 import websockets
 from node_http_proxy import proxy_http_request
+from node_shell_tunnel import close_shell_tunnel, open_shell_tunnel, send_shell_message
 from config import (
     PORT,
     NODE_ADVERTISE_HOST,
@@ -230,6 +231,27 @@ class NodeConnector:
                     body_encoding=params.get("bodyEncoding", "base64"),
                 )
                 await self._send(create_response(self.node_id, request_id, data))
+
+            elif action == NODE_ACTIONS["SHELL_OPEN"]:
+                async def _shell_sender(data: dict):
+                    await self._send(create_event(self.node_id, request_id, "shell", data))
+
+                await open_shell_tunnel(
+                    request_id,
+                    params.get("raw", ""),
+                    _shell_sender,
+                )
+                await self._send(create_response(self.node_id, request_id, {"opened": True}))
+
+            elif action == NODE_ACTIONS["SHELL_MESSAGE"]:
+                shell_id = params.get("shellId") or request_id
+                await send_shell_message(shell_id, params.get("raw", ""))
+                await self._send(create_response(self.node_id, request_id, {"forwarded": True}))
+
+            elif action == NODE_ACTIONS["SHELL_CLOSE"]:
+                shell_id = params.get("shellId") or request_id
+                await close_shell_tunnel(shell_id)
+                await self._send(create_response(self.node_id, request_id, {"closed": True}))
 
             elif action == NODE_ACTIONS["CHAT_SEND"]:
                 original_type = params.get("originalType") or params.get("type")

@@ -63,7 +63,7 @@ node_ws_server = NodeWsServer(registry, _tokens, token_resolver=_resolve_node_ow
 outbound_connector = OutboundConnector(registry, node_ws_server, _tokens)
 node_ws_server.attach_outbound_connector(outbound_connector)
 ws_relay = WsRelay(registry, node_ws_server)
-shell_relay = ShellRelay(registry, _tokens)
+shell_relay = ShellRelay(registry, node_ws_server, _tokens)
 
 # Create FastAPI app
 app = FastAPI(title="cc_server_main", version="0.1.0")
