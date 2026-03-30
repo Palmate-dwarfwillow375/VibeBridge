@@ -10,6 +10,7 @@ type MainContentTabSwitcherProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   shouldShowTasksTab: boolean;
+  isTerminalEnabled: boolean;
 };
 
 type BuiltInTab = {
@@ -46,6 +47,7 @@ export default function MainContentTabSwitcher({
   activeTab,
   setActiveTab,
   shouldShowTasksTab,
+  isTerminalEnabled,
 }: MainContentTabSwitcherProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
@@ -71,10 +73,19 @@ export default function MainContentTabSwitcher({
         const displayLabel = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
 
         return (
-          <Tooltip key={tab.id} content={displayLabel} position="bottom">
+          <Tooltip
+            key={tab.id}
+            content={
+              tab.kind === 'builtin' && tab.id === 'shell' && !isTerminalEnabled
+                ? `${displayLabel} (${t('shell.disabled.short', { defaultValue: 'Disabled' })})`
+                : displayLabel
+            }
+            position="bottom"
+          >
             <Pill
               isActive={isActive}
               onClick={() => setActiveTab(tab.id)}
+              disabled={tab.kind === 'builtin' && tab.id === 'shell' && !isTerminalEnabled}
               className="px-2.5 py-[5px]"
             >
               {tab.kind === 'builtin' ? (

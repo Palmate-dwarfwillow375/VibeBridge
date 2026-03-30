@@ -20,7 +20,7 @@ import ptyprocess
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from config import DEFAULT_TERMINAL_SHELL
+from config import DEFAULT_TERMINAL_SHELL, TERMINAL_ENABLED
 
 # ---------------------------------------------------------------------------
 # PTY session cache (survives WebSocket reconnects)
@@ -52,6 +52,16 @@ def _normalize_url(url: str) -> str | None:
     return url
 
 
+async def _safe_send_terminal_disabled(ws: WebSocket):
+    try:
+        await ws.send_json({
+            "type": "output",
+            "data": "\x1b[33mTerminal access is disabled for this node.\x1b[0m\r\n",
+        })
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Shell handler
 # ---------------------------------------------------------------------------
@@ -60,6 +70,14 @@ async def handle_shell_connection(ws: WebSocket):
     """Handle a /shell WebSocket connection."""
     await ws.accept()
     print("[Shell] WebSocket connected")
+
+    if not TERMINAL_ENABLED:
+        await _safe_send_terminal_disabled(ws)
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        return
 
     pty_proc = None
     pty_session_key: str | None = None

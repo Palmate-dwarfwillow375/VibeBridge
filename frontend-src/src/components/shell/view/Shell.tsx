@@ -13,6 +13,7 @@ import {
 import { useShellRuntime } from '../hooks/useShellRuntime';
 import { sendSocketMessage } from '../utils/socket';
 import { getSessionDisplayName } from '../utils/auth';
+import { useOptionalNodes } from '../../../contexts/NodeContext';
 import ShellConnectionOverlay from './subcomponents/ShellConnectionOverlay';
 import ShellEmptyState from './subcomponents/ShellEmptyState';
 import ShellHeader from './subcomponents/ShellHeader';
@@ -43,6 +44,10 @@ export default function Shell({
   isActive = true,
 }: ShellProps) {
   const { t } = useTranslation('chat');
+  const nodesContext = useOptionalNodes();
+  const projectNodeId = selectedProject?.nodeId ?? selectedSession?.__nodeId ?? nodesContext?.selectedNodeId ?? null;
+  const currentNode = nodesContext?.nodes?.find((node) => node.nodeId === projectNodeId);
+  const isTerminalEnabled = currentNode?.terminalEnabled ?? true;
   const [isRestarting, setIsRestarting] = useState(false);
   const [cliPromptOptions, setCliPromptOptions] = useState<CliPromptOption[] | null>(null);
   const promptCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,7 +72,7 @@ export default function Shell({
     initialCommand,
     isPlainShell,
     minimal,
-    autoConnect,
+    autoConnect: autoConnect && isTerminalEnabled,
     isRestarting,
     onProcessComplete,
     onOutputRef,
@@ -201,6 +206,15 @@ export default function Shell({
       <ShellEmptyState
         title={t('shell.selectProject.title')}
         description={t('shell.selectProject.description')}
+      />
+    );
+  }
+
+  if (!isTerminalEnabled) {
+    return (
+      <ShellEmptyState
+        title={t('shell.disabled.title', { defaultValue: 'Terminal disabled' })}
+        description={t('shell.disabled.description', { defaultValue: 'Terminal access is disabled for this node. Enable terminal.enabled on the node to use the terminal.' })}
       />
     );
   }

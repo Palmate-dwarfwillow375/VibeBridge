@@ -53,6 +53,10 @@ file_tree_max_nodes = 2500
 file_tree_max_depth = 6
 
 [terminal]
+# Set to false to disable terminal access entirely for this node.
+# When disabled, the shell tab is shown as unavailable and backend shell
+# requests are rejected even if the browser tries to open them.
+enabled = true
 # Optional shell override for the built-in terminal.
 default_shell = "/bin/bash"
 

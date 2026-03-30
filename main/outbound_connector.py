@@ -220,6 +220,7 @@ class OutboundConnector:
                         "version": payload.get("version"),
                         "capabilities": payload.get("capabilities"),
                         "labels": payload.get("labels"),
+                        "terminalEnabled": payload.get("terminalEnabled", True),
                         "port": payload.get("advertisePort") or payload.get("port") or conn["port"],
                         "advertiseHost": payload.get("advertiseHost") or conn["host"],
                         "advertisePort": payload.get("advertisePort") or conn["port"],

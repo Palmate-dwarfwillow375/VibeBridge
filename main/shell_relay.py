@@ -57,7 +57,13 @@ class ShellRelay:
                 target_node_id = data.get("nodeId")
                 if not target_node_id:
                     nodes = self.registry.get_all_nodes(user)
-                    online = next((n for n in nodes if n["status"] == "online"), None)
+                    online = next(
+                        (
+                            n for n in nodes
+                            if n["status"] == "online" and n.get("terminalEnabled", True)
+                        ),
+                        None,
+                    )
                     if online:
                         target_node_id = online["nodeId"]
 
@@ -74,6 +80,14 @@ class ShellRelay:
                     await browser_ws.send_json({
                         "type": "output",
                         "data": f"\x1b[31mError: Node \"{target_node_id}\" is unavailable\x1b[0m\r\n",
+                    })
+                    await browser_ws.close()
+                    return
+
+                if not node.get("terminalEnabled", True):
+                    await browser_ws.send_json({
+                        "type": "output",
+                        "data": "\x1b[33mTerminal access is disabled for this node.\x1b[0m\r\n",
                     })
                     await browser_ws.close()
                     return
@@ -115,7 +129,10 @@ class ShellRelay:
                 self.node_ws_server.add_message_listener(registry_key, shell_listener)
 
                 try:
-                    await self.node_ws_server.send_request(registry_key, open_message, timeout_ms=15000)
+                    response = await self.node_ws_server.send_request(registry_key, open_message, timeout_ms=15000)
+                    payload = response.get("payload") or {}
+                    if payload.get("error"):
+                        raise RuntimeError(str(payload["error"]))
                 except Exception as e:
                     if shell_listener:
                         self.node_ws_server.remove_message_listener(registry_key, shell_listener)

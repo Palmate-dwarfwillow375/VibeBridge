@@ -84,6 +84,7 @@ class NodeWsServer:
                         "version": payload.get("version"),
                         "capabilities": payload.get("capabilities"),
                         "labels": payload.get("labels"),
+                        "terminalEnabled": payload.get("terminalEnabled", True),
                         "port": payload.get("advertisePort") or payload.get("port"),
                         "advertiseHost": payload.get("advertiseHost"),
                         "advertisePort": payload.get("advertisePort"),

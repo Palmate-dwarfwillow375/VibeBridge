@@ -21,6 +21,7 @@ from config import (
     NODE_REGISTER_TOKEN,
     NODE_LABELS_LIST,
     NODE_CAPABILITIES_LIST,
+    TERMINAL_ENABLED,
 )
 
 from node_protocol import (
@@ -75,6 +76,7 @@ class NodeConnector:
                 "port": PORT,
                 "advertiseHost": NODE_ADVERTISE_HOST,
                 "advertisePort": NODE_ADVERTISE_PORT,
+                "terminalEnabled": TERMINAL_ENABLED,
             })
             await self.ws.send(json.dumps(reg_msg))
 
@@ -233,6 +235,17 @@ class NodeConnector:
                 await self._send(create_response(self.node_id, request_id, data))
 
             elif action == NODE_ACTIONS["SHELL_OPEN"]:
+                if not TERMINAL_ENABLED:
+                    await self._send(
+                        create_response(
+                            self.node_id,
+                            request_id,
+                            None,
+                            "Terminal access is disabled for this node.",
+                        )
+                    )
+                    return
+
                 async def _shell_sender(data: dict):
                     await self._send(create_event(self.node_id, request_id, "shell", data))
 
@@ -374,6 +387,7 @@ def start_node_connector(handlers: dict) -> NodeConnector | None:
         "token": NODE_REGISTER_TOKEN,
         "labels": list(NODE_LABELS_LIST),
         "capabilities": list(NODE_CAPABILITIES_LIST),
+        "terminalEnabled": TERMINAL_ENABLED,
     })
     connector.set_handlers(handlers)
     asyncio.create_task(connector.connect())

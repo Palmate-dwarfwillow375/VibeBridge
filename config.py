@@ -49,6 +49,7 @@ _COMMON_DEFAULTS: dict[str, Any] = {
         "file_tree_max_depth": 6,
     },
     "terminal": {
+        "enabled": True,
         "default_shell": _DEFAULT_TERMINAL_SHELL,
     },
     "providers": {
@@ -218,6 +219,7 @@ FILE_TREE_MAX_DEPTH = _get_int(
     default=6,
 )
 DEFAULT_TERMINAL_SHELL = _get_string("terminal", "default_shell", default=_DEFAULT_TERMINAL_SHELL)
+TERMINAL_ENABLED = _get_bool("terminal", "enabled", default=True)
 CLAUDE_TOOL_APPROVAL_TIMEOUT_MS = _get_int(
     "providers",
     "claude",

@@ -74,6 +74,7 @@ export type MainContentHeaderProps = {
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
+  isTerminalEnabled: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
 };

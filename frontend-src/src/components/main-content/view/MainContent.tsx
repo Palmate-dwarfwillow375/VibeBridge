@@ -13,6 +13,7 @@ import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import MainContentUtilityPanel from './subcomponents/MainContentUtilityPanel';
 import ErrorBoundary from './ErrorBoundary';
+import { useOptionalNodes } from '../../../contexts/NodeContext';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -57,8 +58,12 @@ function MainContent({
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
+  const nodesContext = useOptionalNodes();
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
+  const currentNodeId = selectedProject?.nodeId ?? nodesContext?.selectedNodeId ?? null;
+  const currentNode = nodesContext?.nodes?.find((node) => node.nodeId === currentNodeId);
+  const isTerminalEnabled = currentNode?.terminalEnabled ?? true;
 
   const {
     editingFile,
@@ -107,6 +112,7 @@ function MainContent({
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
+        isTerminalEnabled={isTerminalEnabled}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
       />

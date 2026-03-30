@@ -13,6 +13,7 @@ export type NodeInfo = {
   version: string;
   capabilities: string[];
   labels: string[];
+  terminalEnabled?: boolean;
   connectedAt: number;
   lastSeenAt: number;
 };

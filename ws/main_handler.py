@@ -17,6 +17,7 @@ from config import (
     PORT,
     NODE_ADVERTISE_HOST,
     NODE_ADVERTISE_PORT,
+    TERMINAL_ENABLED,
 )
 
 from node_protocol import MESSAGE_TYPES, create_message, create_response, create_event, parse_message
@@ -115,6 +116,7 @@ async def handle_main_connection(ws: WebSocket):
                     "port": PORT,
                     "advertiseHost": NODE_ADVERTISE_HOST,
                     "advertisePort": NODE_ADVERTISE_PORT,
+                    "terminalEnabled": TERMINAL_ENABLED,
                 })
                 await _send(info)
                 print(f"[Node] Authenticated Main connection, sent REGISTER_INFO as \"{node_id}\"")
@@ -270,7 +272,11 @@ async def _handle_main_request(ws: WebSocket, node_id: str, msg: dict):
                 create_response(
                     node_id,
                     request_id,
-                    {"capabilities": list(NODE_CAPABILITIES_LIST), "labels": list(NODE_LABELS_LIST)},
+                    {
+                        "capabilities": list(NODE_CAPABILITIES_LIST),
+                        "labels": list(NODE_LABELS_LIST),
+                        "terminalEnabled": TERMINAL_ENABLED,
+                    },
                 )
             )
 
