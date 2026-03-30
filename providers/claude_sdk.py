@@ -399,16 +399,23 @@ def _load_mcp_config(cwd: str | None) -> dict | None:
 # Options mapping
 # ---------------------------------------------------------------------------
 
-def _map_options(options: dict) -> ClaudeSDKOptions:
+def _map_options(options: dict) -> tuple[ClaudeSDKOptions, dict[str, Any]]:
     """Map frontend options to the installed Claude SDK options type."""
     tools_settings = options.get("toolsSettings") or {}
     permission_mode = options.get("permissionMode", "default")
     allowed_tools = list(tools_settings.get("allowedTools") or [])
     disallowed_tools = list(tools_settings.get("disallowedTools") or [])
+    running_as_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    requested_skip_permissions = bool(
+        tools_settings.get("skipPermissions") and permission_mode != "plan"
+    )
+    root_auto_approve = running_as_root and requested_skip_permissions
 
     # Handle skip permissions
     sdk_permission_mode = None
-    if tools_settings.get("skipPermissions") and permission_mode != "plan":
+    if root_auto_approve:
+        sdk_permission_mode = "acceptEdits"
+    elif requested_skip_permissions:
         sdk_permission_mode = "bypassPermissions"
     elif permission_mode and permission_mode != "default":
         sdk_permission_mode = permission_mode
@@ -454,7 +461,11 @@ def _map_options(options: dict) -> ClaudeSDKOptions:
     if hasattr(opts, "include_partial_messages"):
         opts.include_partial_messages = True
 
-    return opts
+    return opts, {
+        "root_auto_approve": root_auto_approve,
+        "requested_skip_permissions": requested_skip_permissions,
+        "running_as_root": running_as_root,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -521,10 +532,11 @@ async def query_claude_sdk(command: str, options: dict, ws):
     session_writer = ws if isinstance(ws, ClaudeSessionWriter) else ClaudeSessionWriter(ws)
 
     try:
-        sdk_opts = _map_options(options)
+        sdk_opts, runtime_flags = _map_options(options)
         final_command, temp_paths, temp_dir = await _handle_images(
             command, options.get("images"), options.get("cwd")
         )
+        root_auto_approve = bool(runtime_flags.get("root_auto_approve"))
 
         allowed_tools = list(sdk_opts.allowed_tools or [])
         disallowed_tools = list(sdk_opts.disallowed_tools or [])
@@ -536,7 +548,7 @@ async def query_claude_sdk(command: str, options: dict, ws):
             requires_interaction = tool_name in TOOLS_REQUIRING_INTERACTION
 
             if not requires_interaction:
-                if sdk_opts.permission_mode == "bypassPermissions":
+                if sdk_opts.permission_mode == "bypassPermissions" or root_auto_approve:
                     return PermissionResultAllow(updated_input=tool_input)
 
                 is_disallowed = any(
@@ -600,6 +612,13 @@ async def query_claude_sdk(command: str, options: dict, ws):
         sdk_opts.can_use_tool = can_use_tool
         client = ClaudeSDKClient(sdk_opts)
         await client.connect()
+
+        if root_auto_approve:
+            session_writer.send({
+                "type": "claude-warning",
+                "message": "Running as root: skip-permissions was downgraded to auto-approve under accept-edits.",
+                "sessionId": captured_session_id or requested_session_id,
+            })
 
         if captured_session_id:
             add_session(
