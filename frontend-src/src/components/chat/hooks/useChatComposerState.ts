@@ -593,7 +593,7 @@ export function useChatComposerState({
       if (promptImages.length > 0) {
         const formData = new FormData();
         promptImages.forEach((file) => {
-          formData.append('images', file);
+          formData.append('files', file);
         });
 
         try {

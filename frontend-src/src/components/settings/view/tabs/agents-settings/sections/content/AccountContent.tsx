@@ -112,6 +112,7 @@ export default function AccountContent({
                     });
                   }}
                   className="h-9 w-full appearance-none rounded-md border border-input bg-background px-3 pr-9 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  style={{ WebkitAppearance: 'none', MozAppearance: 'none', backgroundImage: 'none' }}
                 >
                   {modelOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -149,6 +150,7 @@ export default function AccountContent({
                     );
                   }}
                   className="h-9 w-full appearance-none rounded-md border border-input bg-background px-3 pr-9 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  style={{ WebkitAppearance: 'none', MozAppearance: 'none', backgroundImage: 'none' }}
                 >
                   {THINKING_EFFORT_VALUES.map((value) => (
                     <option key={value} value={value}>

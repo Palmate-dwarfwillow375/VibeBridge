@@ -118,6 +118,7 @@ export default function ChatInputControls({
           value={currentModel}
           onChange={(event) => handleModelChange(event.target.value)}
           className="h-8 appearance-none rounded-lg border border-border/60 bg-muted/50 py-1 pl-3 pr-8 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"
+          style={{ WebkitAppearance: 'none', MozAppearance: 'none', backgroundImage: 'none' }}
           aria-label={t('providerSelection.selectModel', { defaultValue: 'Select model' })}
           title={t('providerSelection.selectModel', { defaultValue: 'Select model' })}
         >
@@ -135,6 +136,7 @@ export default function ChatInputControls({
           value={currentEffort}
           onChange={(event) => handleEffortChange(event.target.value as ProviderThinkingEffort)}
           className="h-8 appearance-none rounded-lg border border-border/60 bg-muted/50 py-1 pl-3 pr-8 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"
+          style={{ WebkitAppearance: 'none', MozAppearance: 'none', backgroundImage: 'none' }}
           aria-label={t('providerSelection.selectStrength', { defaultValue: 'Strength' })}
           title={t('providerSelection.selectStrength', { defaultValue: 'Strength' })}
         >
