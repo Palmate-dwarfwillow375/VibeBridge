@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from database.db import user_db
+from database.db import user_db, user_settings_db
 from middleware.auth import authenticate_token, require_creator, require_staff
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -12,6 +12,10 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 class UserRoleBody(BaseModel):
     role: str
+
+
+class PreferencesBody(BaseModel):
+    settings: dict[str, str | None]
 
 
 @router.get("/profile")
@@ -35,6 +39,19 @@ async def rotate_node_register_token(request: Request, _=Depends(authenticate_to
     user_id = request.state.user["id"]
     token = user_db.rotate_node_register_token(user_id)
     return {"success": True, "nodeRegisterToken": token}
+
+
+@router.get("/preferences")
+async def get_preferences(request: Request, _=Depends(authenticate_token)):
+    user_id = request.state.user["id"]
+    return {"success": True, "settings": user_settings_db.get_settings(user_id)}
+
+
+@router.put("/preferences")
+async def update_preferences(body: PreferencesBody, request: Request, _=Depends(authenticate_token)):
+    user_id = request.state.user["id"]
+    user_settings_db.set_settings(user_id, body.settings or {})
+    return {"success": True}
 
 
 @admin_router.get("/users")

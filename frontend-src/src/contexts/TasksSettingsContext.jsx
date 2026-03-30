@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../utils/api';
+import { useOptionalNodes } from './NodeContext';
 
 const TasksSettingsContext = createContext({
   tasksEnabled: true,
@@ -20,6 +21,9 @@ export const useTasksSettings = () => {
 };
 
 export const TasksSettingsProvider = ({ children }) => {
+  const nodesContext = useOptionalNodes();
+  const selectedNodeId = nodesContext?.selectedNodeId ?? null;
+  const hasSelectableNodes = Boolean(nodesContext?.nodes?.length);
   const [tasksEnabled, setTasksEnabled] = useState(() => {
     // Load from localStorage on initialization
     const saved = localStorage.getItem('tasks-enabled');
@@ -39,6 +43,14 @@ export const TasksSettingsProvider = ({ children }) => {
   // Check TaskMaster installation status asynchronously on component mount
   useEffect(() => {
     const checkInstallation = async () => {
+      if (hasSelectableNodes && !selectedNodeId) {
+        setIsTaskMasterInstalled(null);
+        setIsTaskMasterReady(null);
+        setInstallationStatus(null);
+        setIsCheckingInstallation(false);
+        return;
+      }
+
       try {
         const response = await api.get('/taskmaster/installation-status');
         if (response.ok) {
@@ -69,7 +81,7 @@ export const TasksSettingsProvider = ({ children }) => {
 
     // Run check asynchronously without blocking initial render
     setTimeout(checkInstallation, 0);
-  }, []);
+  }, [hasSelectableNodes, selectedNodeId]);
 
   const toggleTasksEnabled = () => {
     setTasksEnabled(prev => !prev);

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { authenticatedFetch } from '../utils/api';
+import { useOptionalNodes } from './NodeContext';
 
 export type Plugin = {
   name: string;
@@ -42,11 +43,21 @@ export function usePlugins() {
 }
 
 export function PluginsProvider({ children }: { children: ReactNode }) {
+  const nodesContext = useOptionalNodes();
+  const selectedNodeId = nodesContext?.selectedNodeId ?? null;
+  const hasSelectableNodes = Boolean(nodesContext?.nodes?.length);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
 
   const refreshPlugins = useCallback(async () => {
+    if (hasSelectableNodes && !selectedNodeId) {
+      setPlugins([]);
+      setPluginsError(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await authenticatedFetch('/api/plugins');
       if (res.ok) {
@@ -70,7 +81,7 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hasSelectableNodes, selectedNodeId]);
 
   useEffect(() => {
     void refreshPlugins();

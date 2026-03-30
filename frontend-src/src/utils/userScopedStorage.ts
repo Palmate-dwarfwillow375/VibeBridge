@@ -94,7 +94,7 @@ const flushPendingUpdates = async () => {
   }
 
   try {
-    await fetch(prefixUrl('/api/user/preferences'), {
+    await fetch(prefixUrl('/api/account/preferences'), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

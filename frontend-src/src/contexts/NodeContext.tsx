@@ -1,5 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useAuth } from '../components/auth/context/AuthContext';
 import { api, authenticatedFetch } from '../utils/api';
+import {
+  hydrateUserScopedStorage,
+  markUserScopedStorageHydrated,
+} from '../utils/userScopedStorage';
 
 export type NodeInfo = {
   nodeId: string;
@@ -39,6 +44,7 @@ export const useOptionalNodes = () => {
 const SELECTED_NODE_KEY = 'selectedNodeId';
 
 export const NodeProvider = ({ children }: { children: React.ReactNode }) => {
+  const { user, token } = useAuth();
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     () => localStorage.getItem(SELECTED_NODE_KEY)
@@ -124,6 +130,43 @@ export const NodeProvider = ({ children }: { children: React.ReactNode }) => {
 
     await fetchNodes();
   }, [fetchNodes, selectedNodeId, updateSelectedNode]);
+
+  useEffect(() => {
+    const userId = user?.id === undefined || user?.id === null ? '' : String(user.id);
+    if (!userId || !token || !selectedNodeId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadPreferences = async () => {
+      try {
+        const response = await authenticatedFetch('/api/account/preferences');
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = await response.json() as { settings?: Record<string, string> };
+        if (cancelled) {
+          return;
+        }
+
+        hydrateUserScopedStorage(userId, payload.settings || {});
+      } catch (error) {
+        console.error('Error loading user preferences for selected node:', error);
+      } finally {
+        if (!cancelled) {
+          markUserScopedStorageHydrated(userId);
+        }
+      }
+    };
+
+    void loadPreferences();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNodeId, token, user]);
 
   // Poll for node status updates
   useEffect(() => {

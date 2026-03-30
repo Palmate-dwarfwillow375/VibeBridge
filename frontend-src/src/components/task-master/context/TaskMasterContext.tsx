@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
 import { useAuth } from '../../auth/context/AuthContext';
+import { useOptionalNodes } from '../../../contexts/NodeContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import type {
   TaskMasterContextError,
@@ -59,6 +60,9 @@ export function useTaskMaster() {
 export function TaskMasterProvider({ children }: { children: React.ReactNode }) {
   const { latestMessage } = useWebSocket();
   const { user, token, isLoading: isAuthLoading } = useAuth();
+  const nodesContext = useOptionalNodes();
+  const selectedNodeId = nodesContext?.selectedNodeId ?? null;
+  const hasSelectableNodes = Boolean(nodesContext?.nodes?.length);
 
   const [projects, setProjects] = useState<TaskMasterProject[]>([]);
   const [currentProject, setCurrentProjectState] = useState<TaskMasterProject | null>(null);
@@ -99,7 +103,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const refreshProjects = useCallback(async () => {
-    if (!user || !token) {
+    if (!user || !token || (hasSelectableNodes && !selectedNodeId)) {
       setProjects([]);
       setCurrentProjectState(null);
       setProjectTaskMaster(null);
@@ -136,12 +140,12 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsLoading(false);
     }
-  }, [clearError, handleError, token, user]);
+  }, [clearError, handleError, hasSelectableNodes, selectedNodeId, token, user]);
 
   const refreshTasks = useCallback(async () => {
     const projectName = currentProject?.name;
 
-    if (!projectName || !user || !token) {
+    if (!projectName || !user || !token || (hasSelectableNodes && !selectedNodeId)) {
       setTasks([]);
       setNextTask(null);
       return;
@@ -169,10 +173,10 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsLoadingTasks(false);
     }
-  }, [clearError, currentProject?.name, handleError, token, user]);
+  }, [clearError, currentProject?.name, handleError, hasSelectableNodes, selectedNodeId, token, user]);
 
   const refreshMCPStatus = useCallback(async () => {
-    if (!user || !token) {
+    if (!user || !token || (hasSelectableNodes && !selectedNodeId)) {
       setMcpServerStatus(null);
       return;
     }
@@ -194,7 +198,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setIsLoadingMCP(false);
     }
-  }, [clearError, handleError, token, user]);
+  }, [clearError, handleError, hasSelectableNodes, selectedNodeId, token, user]);
 
   useEffect(() => {
     if (!isAuthLoading && user && token) {

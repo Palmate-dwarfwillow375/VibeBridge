@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
-import { api, prefixUrl } from '../../../utils/api';
+import { api } from '../../../utils/api';
 import { AUTH_ERROR_MESSAGES, AUTH_TOKEN_STORAGE_KEY, AUTH_USER_ID_STORAGE_KEY } from '../constants';
 import type {
   AuthContextValue,
@@ -12,15 +12,12 @@ import type {
   OnboardingStatusPayload,
 } from '../types';
 import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
-import {
-  hydrateUserScopedStorage,
-  markUserScopedStorageHydrated,
-  resetUserScopedStorageHydration,
-} from '../../../utils/userScopedStorage';
+import { resetUserScopedStorageHydration } from '../../../utils/userScopedStorage';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+const readStoredUserId = (): string => localStorage.getItem(AUTH_USER_ID_STORAGE_KEY) || '';
 
 const persistToken = (token: string) => {
   localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
@@ -43,6 +40,27 @@ const clearStoredUserId = () => {
   localStorage.removeItem(AUTH_USER_ID_STORAGE_KEY);
 };
 
+const usersMatch = (left: AuthUser | null, right: AuthUser | null): boolean => {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return (
+    left.id === right.id &&
+    left.username === right.username &&
+    left.role === right.role &&
+    left.nodeRegisterToken === right.nodeRegisterToken
+  );
+};
+
+const hasSelectedNodeId = (): boolean => {
+  try {
+    return Boolean(localStorage.getItem('selectedNodeId'));
+  } catch {
+    return false;
+  }
+};
+
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) {
@@ -60,46 +78,27 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const hydrateUserPreferences = useCallback(async (nextUser: AuthUser, nextToken: string) => {
-    const userId = nextUser.id === undefined || nextUser.id === null ? '' : String(nextUser.id);
-    if (!userId || !nextToken) {
-      return;
-    }
-
-    try {
-      const response = await fetch(prefixUrl('/api/user/preferences'), {
-        headers: {
-          Authorization: `Bearer ${nextToken}`,
-        },
-      });
-      if (response.ok) {
-        const payload = await parseJsonSafely<{ settings?: Record<string, string> }>(response);
-        hydrateUserScopedStorage(userId, payload?.settings || {});
-      }
-    } catch (error) {
-      console.error('Failed to hydrate user preferences:', error);
-    } finally {
-      markUserScopedStorageHydrated(userId);
-    }
-  }, []);
-
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
-    setUser(nextUser);
+    setUser((currentUser) => (usersMatch(currentUser, nextUser) ? currentUser : nextUser));
     setToken(nextToken);
     persistToken(nextToken);
     persistUserId(nextUser);
   }, []);
 
   const clearSession = useCallback(() => {
-    const currentUserId = user?.id === undefined || user?.id === null ? '' : String(user.id);
-    resetUserScopedStorageHydration(currentUserId);
+    resetUserScopedStorageHydration(readStoredUserId());
     setUser(null);
     setToken(null);
     clearStoredToken();
     clearStoredUserId();
-  }, [user]);
+  }, []);
 
   const checkOnboardingStatus = useCallback(async () => {
+    if (!hasSelectedNodeId()) {
+      setHasCompletedOnboarding(true);
+      return;
+    }
+
     try {
       const response = await api.user.onboardingStatus();
       if (!response.ok) {
@@ -150,17 +149,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return;
       }
 
+      setUser((currentUser) => (usersMatch(currentUser, userPayload.user) ? currentUser : userPayload.user));
       persistUserId(userPayload.user);
-      await hydrateUserPreferences(userPayload.user, token);
-      setUser(userPayload.user);
-      await checkOnboardingStatus();
     } catch (caughtError) {
       console.error('[Auth] Auth status check failed:', caughtError);
       setError(AUTH_ERROR_MESSAGES.authStatusCheckFailed);
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, hydrateUserPreferences, token]);
+  }, [clearSession, token]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
@@ -189,9 +186,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
 
         setSession(payload.user, payload.token);
-        await hydrateUserPreferences(payload.user, payload.token);
         setNeedsSetup(false);
-        await checkOnboardingStatus();
         return { success: true };
       } catch (caughtError) {
         console.error('Login error:', caughtError);
@@ -199,7 +194,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return { success: false, error: AUTH_ERROR_MESSAGES.networkError };
       }
     },
-    [checkOnboardingStatus, hydrateUserPreferences, setSession],
+    [setSession],
   );
 
   const register = useCallback<AuthContextValue['register']>(
@@ -217,9 +212,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
         if (payload.token) {
           setSession(payload.user, payload.token);
-          await hydrateUserPreferences(payload.user, payload.token);
           setNeedsSetup(false);
-          await checkOnboardingStatus();
           return { success: true, message: payload.message || undefined };
         }
 
@@ -236,7 +229,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return { success: false, error: AUTH_ERROR_MESSAGES.networkError };
       }
     },
-    [checkOnboardingStatus, clearSession, hydrateUserPreferences, setSession],
+    [clearSession, setSession],
   );
 
   const logout = useCallback(() => {
