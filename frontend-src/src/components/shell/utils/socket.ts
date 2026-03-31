@@ -9,13 +9,7 @@ export function getShellWebSocketUrl(): string | null {
     return `${wsBase}/shell`;
   }
 
-  const token = localStorage.getItem('auth-token');
-  if (!token) {
-    console.error('No authentication token found for Shell WebSocket connection');
-    return null;
-  }
-
-  return `${wsBase}/shell?token=${encodeURIComponent(token)}`;
+  return `${wsBase}/shell`;
 }
 
 export function parseShellMessage(payload: string): ShellIncomingMessage | null {

@@ -32,6 +32,11 @@ export function useShellRuntime({
   const onProcessCompleteRef = useRef(onProcessComplete);
   const authUrlRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
+  const lastProjectKeyRef = useRef<string | null>(
+    selectedProject
+      ? `${selectedProject.nodeId || 'local'}::${selectedProject.fullPath || selectedProject.path || selectedProject.name}`
+      : null,
+  );
 
   // Keep mutable values in refs so websocket handlers always read current data.
   useEffect(() => {
@@ -139,6 +144,27 @@ export function useShellRuntime({
     disconnectFromShell();
     disposeTerminal();
   }, [disconnectFromShell, disposeTerminal, selectedProject]);
+
+  useEffect(() => {
+    const currentProjectKey = selectedProject
+      ? `${selectedProject.nodeId || 'local'}::${selectedProject.fullPath || selectedProject.path || selectedProject.name}`
+      : null;
+
+    if (lastProjectKeyRef.current !== currentProjectKey && isInitialized) {
+      disconnectFromShell();
+      disposeTerminal();
+    }
+
+    lastProjectKeyRef.current = currentProjectKey;
+  }, [
+    disconnectFromShell,
+    disposeTerminal,
+    isInitialized,
+    selectedProject?.fullPath,
+    selectedProject?.name,
+    selectedProject?.nodeId,
+    selectedProject?.path,
+  ]);
 
   useEffect(() => {
     const currentSessionId = selectedSession?.id ?? null;

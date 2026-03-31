@@ -26,7 +26,10 @@ from config import DEFAULT_TERMINAL_SHELL, TERMINAL_ENABLED
 # PTY session cache (survives WebSocket reconnects)
 # ---------------------------------------------------------------------------
 
-PTY_SESSION_TIMEOUT = 30 * 60  # 30 minutes
+DEFAULT_PTY_SESSION_TIMEOUT = 5 * 60
+MAX_PTY_SESSION_TIMEOUT = 60 * 60
+DEFAULT_MAX_RETAINED_SESSIONS = 5
+MAX_RETAINED_SESSIONS = 10
 SHELL_URL_PARSE_BUFFER_LIMIT = 2048
 
 pty_sessions: dict[str, dict] = {}
@@ -50,6 +53,65 @@ def _normalize_url(url: str) -> str | None:
     if not url.startswith("http"):
         return None
     return url
+
+
+def _clamp_int(value: object, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, min(max_value, parsed))
+
+
+def _parse_retention_settings(data: dict) -> tuple[int, int]:
+    retention_minutes = _clamp_int(
+        data.get("shellRetentionMinutes"),
+        DEFAULT_PTY_SESSION_TIMEOUT // 60,
+        0,
+        MAX_PTY_SESSION_TIMEOUT // 60,
+    )
+    max_retained_sessions = _clamp_int(
+        data.get("shellMaxRetainedSessions"),
+        DEFAULT_MAX_RETAINED_SESSIONS,
+        0,
+        MAX_RETAINED_SESSIONS,
+    )
+    return retention_minutes, max_retained_sessions
+
+
+def _build_session_key(user_scope: str, project_path: str, session_id: str | None, cmd_suffix: str) -> str:
+    return f"{user_scope}::{project_path}_{session_id or 'default'}{cmd_suffix}"
+
+
+def _terminate_retained_session(session_key: str, reason: str) -> None:
+    session = pty_sessions.pop(session_key, None)
+    if not session:
+        return
+    timeout_task = session.get("timeout_task")
+    if timeout_task:
+        timeout_task.cancel()
+    proc = session.get("pty")
+    if proc and proc.isalive():
+        proc.terminate(force=True)
+    print(f"[Shell] PTY session closed: {session_key} ({reason})")
+
+
+def _enforce_retention_limit(user_scope: str, max_retained_sessions: int) -> None:
+    if max_retained_sessions <= 0:
+        for key, session in list(pty_sessions.items()):
+            if session.get("userScope") == user_scope and not session.get("ws"):
+                _terminate_retained_session(key, "retention disabled")
+        return
+
+    detached_sessions = [
+        (key, session)
+        for key, session in pty_sessions.items()
+        if session.get("userScope") == user_scope and not session.get("ws")
+    ]
+    detached_sessions.sort(key=lambda item: item[1].get("lastDetachedAt") or 0, reverse=True)
+
+    for key, _session in detached_sessions[max_retained_sessions:]:
+        _terminate_retained_session(key, "retention limit exceeded")
 
 
 async def _safe_send_terminal_disabled(ws: WebSocket):
@@ -190,6 +252,8 @@ async def handle_shell_connection(ws: WebSocket):
                 has_session = data.get("hasSession", False)
                 provider = data.get("provider", "claude")
                 initial_command = data.get("initialCommand")
+                user_scope = str(data.get("userId") or "anon")
+                retention_minutes, max_retained_sessions = _parse_retention_settings(data)
                 is_plain_shell = data.get("isPlainShell") or (bool(initial_command) and not has_session) or provider == "plain-shell"
 
                 url_buffer = ""
@@ -200,7 +264,7 @@ async def handle_shell_connection(ws: WebSocket):
                 if is_plain_shell and initial_command:
                     cmd_hash = hashlib.md5(initial_command.encode()).hexdigest()[:16]
                     cmd_suffix = f"_cmd_{cmd_hash}"
-                pty_session_key = f"{project_path}_{session_id or 'default'}{cmd_suffix}"
+                pty_session_key = _build_session_key(user_scope, project_path, session_id, cmd_suffix)
 
                 # Login command detection
                 is_login = initial_command and any(
@@ -220,6 +284,8 @@ async def handle_shell_connection(ws: WebSocket):
                 if existing:
                     print(f"[Shell] Reconnecting to existing PTY: {pty_session_key}")
                     pty_proc = existing["pty"]
+                    existing["retentionSeconds"] = retention_minutes * 60
+                    existing["maxRetainedSessions"] = max_retained_sessions
 
                     if existing.get("timeout_task"):
                         existing["timeout_task"].cancel()
@@ -237,6 +303,7 @@ async def handle_shell_connection(ws: WebSocket):
                 # Validate project path
                 resolved_path = os.path.abspath(project_path)
                 if not os.path.isdir(resolved_path):
+                    print(f"[Shell] Invalid project path: {project_path} -> {resolved_path}")
                     await _send({"type": "error", "message": "Invalid project path"})
                     continue
 
@@ -294,6 +361,10 @@ async def handle_shell_connection(ws: WebSocket):
                         "ws": ws,
                         "buffer": [],
                         "timeout_task": None,
+                        "userScope": user_scope,
+                        "retentionSeconds": retention_minutes * 60,
+                        "maxRetainedSessions": max_retained_sessions,
+                        "lastDetachedAt": None,
                         "project_path": project_path,
                         "session_id": session_id,
                     }
@@ -334,15 +405,26 @@ async def handle_shell_connection(ws: WebSocket):
         if pty_session_key and pty_session_key in pty_sessions:
             session = pty_sessions[pty_session_key]
             session["ws"] = None
+            session["lastDetachedAt"] = time.time()
             print(f"[Shell] PTY kept alive for reconnection: {pty_session_key}")
 
+            keepalive_seconds = int(session.get("retentionSeconds") or 0)
+            max_retained_sessions = int(session.get("maxRetainedSessions") or 0)
+            user_scope = str(session.get("userScope") or "anon")
+
+            if session.get("timeout_task"):
+                session["timeout_task"].cancel()
+
+            _enforce_retention_limit(user_scope, max_retained_sessions)
+
+            if keepalive_seconds <= 0 or max_retained_sessions <= 0:
+                _terminate_retained_session(pty_session_key, "retention disabled")
+                return
+
             async def _timeout_kill():
-                await asyncio.sleep(PTY_SESSION_TIMEOUT)
+                await asyncio.sleep(keepalive_seconds)
                 if pty_session_key in pty_sessions:
-                    s = pty_sessions.pop(pty_session_key, None)
-                    if s and s.get("pty") and s["pty"].isalive():
-                        s["pty"].terminate(force=True)
-                    print(f"[Shell] PTY session timed out: {pty_session_key}")
+                    _terminate_retained_session(pty_session_key, "retention timeout")
 
             try:
                 session["timeout_task"] = asyncio.create_task(_timeout_kill())

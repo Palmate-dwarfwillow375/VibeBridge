@@ -31,12 +31,38 @@ class ShellRelay:
         shell_id = None
         shell_listener = None
 
+        async def _close_active_shell():
+            nonlocal node_id, registry_key, shell_id, shell_listener
+            if registry_key and shell_listener:
+                self.node_ws_server.remove_message_listener(registry_key, shell_listener)
+                shell_listener = None
+            if registry_key and node_id and shell_id:
+                close_message, _request_id = create_request(
+                    node_id,
+                    NODE_ACTIONS["SHELL_CLOSE"],
+                    {"shellId": shell_id},
+                )
+                try:
+                    await self.node_ws_server.send_to_node(registry_key, close_message)
+                except Exception:
+                    pass
+            node_id = None
+            registry_key = None
+            shell_id = None
+
         try:
             while True:
                 raw = await browser_ws.receive_text()
+                parsed = None
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = None
+
+                is_reinit = isinstance(parsed, dict) and parsed.get("type") == "init"
 
                 # Already connected — forward directly over the node WS tunnel
-                if shell_id and node_id and registry_key:
+                if shell_id and node_id and registry_key and not is_reinit:
                     message, _request_id = create_request(
                         node_id,
                         NODE_ACTIONS["SHELL_MESSAGE"],
@@ -47,12 +73,20 @@ class ShellRelay:
                         break
                     continue
 
+                if shell_id and node_id and registry_key and is_reinit:
+                    await _close_active_shell()
+
                 # Parse to find target node
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
+                data = parsed
+                if not isinstance(data, dict):
                     buffered.append(raw)
                     continue
+
+                if data.get("type") == "init" and isinstance(user, dict):
+                    resolved_user_id = user.get("id", user.get("userId"))
+                    if resolved_user_id is not None:
+                        data["userId"] = resolved_user_id
+                        raw = json.dumps(data)
 
                 target_node_id = data.get("nodeId")
                 if not target_node_id:
@@ -151,15 +185,4 @@ class ShellRelay:
         except Exception as e:
             print(f"[Main] Shell relay error: {e}")
         finally:
-            if registry_key and shell_listener:
-                self.node_ws_server.remove_message_listener(registry_key, shell_listener)
-            if registry_key and node_id and shell_id:
-                close_message, _request_id = create_request(
-                    node_id,
-                    NODE_ACTIONS["SHELL_CLOSE"],
-                    {"shellId": shell_id},
-                )
-                try:
-                    await self.node_ws_server.send_to_node(registry_key, close_message)
-                except Exception:
-                    pass
+            await _close_active_shell()

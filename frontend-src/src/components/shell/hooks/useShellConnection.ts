@@ -3,12 +3,51 @@ import type { MutableRefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 import type { Project, ProjectSession } from '../../../types/app';
+import { AUTH_USER_ID_STORAGE_KEY } from '../../auth/constants';
 import { TERMINAL_INIT_DELAY_MS } from '../constants/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../utils/socket';
 
 const ANSI_ESCAPE_REGEX =
   /(?:\u001B\[[0-?]*[ -/]*[@-~]|\u009B[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u009D[^\u0007\u009C]*(?:\u0007|\u009C)|\u001B[PX^_][^\u001B]*\u001B\\|[\u0090\u0098\u009E\u009F][^\u009C]*\u009C|\u001B[@-Z\\-_])/g;
 const PROCESS_EXIT_REGEX = /Process exited with code (\d+)/;
+const DEFAULT_SHELL_RETENTION_MINUTES = 5;
+const DEFAULT_SHELL_MAX_RETAINED_SESSIONS = 5;
+const MAX_SHELL_RETENTION_MINUTES = 60;
+const MAX_SHELL_MAX_RETAINED_SESSIONS = 10;
+
+const clampInteger = (value: unknown, fallback: number, min: number, max: number): number => {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+};
+
+const readShellRetentionSettings = () => {
+  try {
+    const raw = localStorage.getItem('uiPreferences');
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      shellRetentionMinutes: clampInteger(
+        parsed?.shellRetentionMinutes,
+        DEFAULT_SHELL_RETENTION_MINUTES,
+        0,
+        MAX_SHELL_RETENTION_MINUTES,
+      ),
+      shellMaxRetainedSessions: clampInteger(
+        parsed?.shellMaxRetainedSessions,
+        DEFAULT_SHELL_MAX_RETAINED_SESSIONS,
+        0,
+        MAX_SHELL_MAX_RETAINED_SESSIONS,
+      ),
+    };
+  } catch {
+    return {
+      shellRetentionMinutes: DEFAULT_SHELL_RETENTION_MINUTES,
+      shellMaxRetainedSessions: DEFAULT_SHELL_MAX_RETAINED_SESSIONS,
+    };
+  }
+};
 
 type UseShellConnectionOptions = {
   wsRef: MutableRefObject<WebSocket | null>;
@@ -136,23 +175,39 @@ export function useShellConnection({
             const currentTerminal = terminalRef.current;
             const currentFitAddon = fitAddonRef.current;
             const currentProject = selectedProjectRef.current;
+            const currentSession = selectedSessionRef.current;
             if (!currentTerminal || !currentFitAddon || !currentProject) {
               return;
             }
 
             currentFitAddon.fit();
 
+            const targetNodeId =
+              currentProject.nodeId ||
+              currentSession?.__nodeId ||
+              localStorage.getItem('selectedNodeId') ||
+              undefined;
+            const provider =
+              isPlainShellRef.current
+                ? 'plain-shell'
+                : (currentSession?.__provider || localStorage.getItem('selected-provider') || 'claude');
+            const currentUserId = Number.parseInt(localStorage.getItem(AUTH_USER_ID_STORAGE_KEY) || '', 10);
+            const { shellRetentionMinutes, shellMaxRetainedSessions } = readShellRetentionSettings();
+
             sendSocketMessage(socket, {
               type: 'init',
               projectPath: currentProject.fullPath || currentProject.path || '',
-              sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
-              hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
-              provider: (isPlainShellRef.current || localStorage.getItem('selectedNodeId')) ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
+              sessionId: isPlainShellRef.current ? null : currentSession?.id || null,
+              hasSession: isPlainShellRef.current ? false : Boolean(currentSession),
+              provider,
               cols: currentTerminal.cols,
               rows: currentTerminal.rows,
               initialCommand: initialCommandRef.current,
               isPlainShell: isPlainShellRef.current,
-              nodeId: localStorage.getItem('selectedNodeId') || undefined,
+              nodeId: targetNodeId,
+              userId: Number.isFinite(currentUserId) ? currentUserId : undefined,
+              shellRetentionMinutes,
+              shellMaxRetainedSessions,
             });
           }, TERMINAL_INIT_DELAY_MS);
         };

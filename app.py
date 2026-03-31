@@ -54,7 +54,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Refreshed-Token"],
 )
 
 
@@ -735,11 +734,7 @@ async def system_update(_=Depends(authenticate_token)):
 @app.websocket("/ws")
 async def ws_chat(ws: WebSocket):
     if not (MAIN_SERVER_URL or MAIN_REGISTER_URL):
-        auth_header = ws.headers.get("authorization", "")
-        token = ws.query_params.get("token")
-        if not token and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        user = authenticate_websocket(token)
+        user = authenticate_websocket(ws)
         if not user:
             await ws.close(4003, "Authentication failed")
             return
@@ -749,11 +744,7 @@ async def ws_chat(ws: WebSocket):
 @app.websocket("/shell")
 async def ws_shell(ws: WebSocket):
     if not (MAIN_SERVER_URL or MAIN_REGISTER_URL):
-        auth_header = ws.headers.get("authorization", "")
-        token = ws.query_params.get("token")
-        if not token and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        user = authenticate_websocket(token)
+        user = authenticate_websocket(ws)
         if not user:
             await ws.close(4003, "Authentication failed")
             return

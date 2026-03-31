@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, Response, Depends, HTTPException
 from pydantic import BaseModel
 
 from database.db import user_db
-from middleware.auth import generate_token, authenticate_token
+from middleware.auth import generate_token, authenticate_token, set_auth_cookie, clear_auth_cookie
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -21,7 +21,7 @@ async def auth_status():
 
 
 @router.post("/register")
-async def register(body: AuthRequest):
+async def register(body: AuthRequest, request: Request, response: Response):
     if not body.username or not body.password:
         raise HTTPException(400, "Username and password are required")
     if len(body.username) < 3 or len(body.password) < 6:
@@ -40,17 +40,19 @@ async def register(body: AuthRequest):
 
     if token:
         user_db.update_last_login(user["id"])
+    if token:
+        set_auth_cookie(response, token, request)
+
     return {
         "success": True,
         "user": {"id": user["id"], "username": user["username"], "role": user.get("role", "user")},
         "pendingApproval": user.get("role") == "pending",
         "message": "Registration submitted. An administrator must approve your account before you can sign in." if user.get("role") == "pending" else None,
-        "token": token,
     }
 
 
 @router.post("/login")
-async def login(body: AuthRequest):
+async def login(body: AuthRequest, request: Request, response: Response):
     if not body.username or not body.password:
         raise HTTPException(400, "Username and password are required")
 
@@ -66,10 +68,10 @@ async def login(body: AuthRequest):
 
     token = generate_token(user)
     user_db.update_last_login(user["id"])
+    set_auth_cookie(response, token, request)
     return {
         "success": True,
         "user": {"id": user["id"], "username": user["username"], "role": user.get("role", "user")},
-        "token": token,
     }
 
 
@@ -80,4 +82,5 @@ async def get_user(request: Request, response: Response, _=Depends(authenticate_
 
 @router.post("/logout")
 async def logout(request: Request, response: Response, _=Depends(authenticate_token)):
+    clear_auth_cookie(response, request)
     return {"success": True, "message": "Logged out successfully"}

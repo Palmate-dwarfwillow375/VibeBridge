@@ -119,6 +119,18 @@
       "alphabetical": "Alphabetical",
       "recentActivity": "Recent Activity"
     },
+    "shellRetention": {
+      "title": "Shell Session Retention",
+      "description": "Keep recent shell contexts alive when switching nodes or projects.",
+      "maxSessions": {
+        "label": "Max retained shells",
+        "description": "How many detached shell contexts to keep per user. 0 disables retention. Maximum 10."
+      },
+      "minutes": {
+        "label": "Retention time (minutes)",
+        "description": "How long to keep a detached shell alive for reconnection. 0 disables retention. Maximum 60 minutes."
+      }
+    },
     "codeEditor": {
       "title": "Code Editor",
       "theme": {

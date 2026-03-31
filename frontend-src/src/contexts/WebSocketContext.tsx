@@ -21,11 +21,10 @@ export const useWebSocket = () => {
 
 import { getWsBase } from '../utils/api';
 
-const buildWebSocketUrl = (token: string | null) => {
+const buildWebSocketUrl = () => {
   const wsBase = getWsBase();
   if (IS_PLATFORM) return `${wsBase}/ws`; // Platform mode
-  if (!token) return null;
-  return `${wsBase}/ws?token=${encodeURIComponent(token)}`; // OSS mode
+  return `${wsBase}/ws`;
 };
 
 const useWebSocketProviderState = (): WebSocketContextType => {
@@ -55,9 +54,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     if (unmountedRef.current) return; // Prevent connection if unmounted
     try {
       // Construct WebSocket URL
-      const wsUrl = buildWebSocketUrl(token);
-
-      if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
+      const wsUrl = buildWebSocketUrl();
       
       const websocket = new WebSocket(wsUrl);
 

@@ -94,6 +94,43 @@ export default function AppearanceSettingsTab({
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection
+        title={t('appearanceSettings.shellRetention.title', { defaultValue: 'Shell Session Retention' })}
+        description={t('appearanceSettings.shellRetention.description', { defaultValue: 'Keep recent shell contexts alive when switching nodes or projects.' })}
+      >
+        <SettingsCard divided>
+          <SettingsRow
+            label={t('appearanceSettings.shellRetention.maxSessions.label', { defaultValue: 'Max retained shells' })}
+            description={t('appearanceSettings.shellRetention.maxSessions.description', { defaultValue: 'How many detached shell contexts to keep per user. 0 disables retention. Maximum 10.' })}
+          >
+            <input
+              type="number"
+              min={0}
+              max={10}
+              step={1}
+              value={preferences.shellMaxRetainedSessions}
+              onChange={(event) => setPreference('shellMaxRetainedSessions', event.target.value)}
+              className="w-24 rounded-lg border border-input bg-card p-2.5 text-sm text-foreground touch-manipulation focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t('appearanceSettings.shellRetention.minutes.label', { defaultValue: 'Retention time (minutes)' })}
+            description={t('appearanceSettings.shellRetention.minutes.description', { defaultValue: 'How long to keep a detached shell alive for reconnection. 0 disables retention. Maximum 60 minutes.' })}
+          >
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={1}
+              value={preferences.shellRetentionMinutes}
+              onChange={(event) => setPreference('shellRetentionMinutes', event.target.value)}
+              className="w-24 rounded-lg border border-input bg-card p-2.5 text-sm text-foreground touch-manipulation focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title={t('quickSettings.sections.toolDisplay')}>
         <SettingsCard divided>
           {renderPreferenceRows(TOOL_DISPLAY_TOGGLES)}

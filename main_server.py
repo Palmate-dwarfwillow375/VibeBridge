@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from database.db import initialize_database
 from database.db import user_db
-from middleware.auth import authenticate_token, authenticate_websocket
+from middleware.auth import authenticate_token, authenticate_websocket, extract_auth_token
 from main.node_registry import NodeRegistry
 from main.node_ws_server import NodeWsServer
 from main.outbound_connector import OutboundConnector
@@ -74,7 +74,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Refreshed-Token"],
 )
 
 
@@ -260,13 +259,8 @@ async def proxy_middleware(request: Request, call_next):
         return await call_next(request)
 
     # Auth check
-    from middleware.auth import authenticate_token as _auth, _verify_token
-    token = None
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    if not token:
-        token = request.query_params.get("token")
+    from middleware.auth import _verify_token
+    token = extract_auth_token(request)
     if not token:
         return Response(content='{"detail":"No token provided"}', status_code=401, media_type="application/json")
     decoded = _verify_token(token)
@@ -314,9 +308,7 @@ async def ws_node(ws: WebSocket):
 @app.websocket("/ws")
 async def ws_browser(ws: WebSocket):
     """Browser chat relay connections."""
-    # Auth
-    token = ws.query_params.get("token")
-    user = authenticate_websocket(token)
+    user = authenticate_websocket(ws)
     if not user:
         await ws.close(4003, "Authentication failed")
         return
@@ -326,8 +318,7 @@ async def ws_browser(ws: WebSocket):
 @app.websocket("/shell")
 async def ws_shell(ws: WebSocket):
     """Browser shell relay connections."""
-    token = ws.query_params.get("token")
-    user = authenticate_websocket(token)
+    user = authenticate_websocket(ws)
     if not user:
         await ws.close(4003, "Authentication failed")
         return

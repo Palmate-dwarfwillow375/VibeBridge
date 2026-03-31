@@ -46,10 +46,16 @@ export default function MainContentUtilityPanel({
   if (panelTab === 'files') {
     content = <FileTree selectedProject={selectedProject} onFileOpen={onFileOpen} />;
   } else if (panelTab === 'shell') {
+    const shellInstanceKey = [
+      selectedProject.nodeId || 'local',
+      selectedProject.fullPath || selectedProject.path || selectedProject.name,
+    ].join(':');
     content = (
       <StandaloneShell
+        key={shellInstanceKey}
         project={selectedProject}
-        session={selectedSession}
+        session={null}
+        isPlainShell
         showHeader={false}
         isActive
       />

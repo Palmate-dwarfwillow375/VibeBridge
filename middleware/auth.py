@@ -3,16 +3,15 @@ import time
 from typing import Optional
 
 import jwt
-from fastapi import Request, Response, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Request, Response, HTTPException
 
 from database.db import user_db, app_config_db
 from config import IS_PLATFORM, MAIN_SERVER_URL, MAIN_REGISTER_URL, JWT_SECRET_VALUE
 
 # JWT secret: config file > auto-generated per installation
 JWT_SECRET = JWT_SECRET_VALUE or app_config_db.get_or_create_jwt_secret()
-
-_bearer_scheme = HTTPBearer(auto_error=False)
+AUTH_COOKIE_NAME = "auth_token"
+TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 
 def generate_token(user: dict) -> str:
@@ -22,7 +21,7 @@ def generate_token(user: dict) -> str:
         "username": user["username"],
         "role": user.get("role", "user"),
         "iat": now,
-        "exp": now + 7 * 24 * 3600,  # 7 days
+        "exp": now + TOKEN_TTL_SECONDS,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -35,10 +34,67 @@ def _verify_token(token: str) -> Optional[dict]:
         return None
 
 
+def _is_secure_request(conn) -> bool:
+    forwarded_proto = ""
+    headers = getattr(conn, "headers", None)
+    if headers is not None:
+        forwarded_proto = headers.get("x-forwarded-proto", "")
+    scheme = getattr(getattr(conn, "url", None), "scheme", "")
+    return forwarded_proto.lower() == "https" or scheme.lower() == "https"
+
+
+def set_auth_cookie(response: Response, token: str, request: Request) -> None:
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        max_age=TOKEN_TTL_SECONDS,
+        httponly=True,
+        secure=_is_secure_request(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/",
+        secure=_is_secure_request(request),
+        samesite="lax",
+    )
+
+
+def extract_auth_token(request: Request) -> Optional[str]:
+    return request.cookies.get(AUTH_COOKIE_NAME)
+
+
+def authenticate_websocket(connection) -> Optional[dict]:
+    """WebSocket authentication — returns user dict or None."""
+    if IS_PLATFORM:
+        user = user_db.get_first_user()
+        if user:
+            return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
+        return None
+
+    cookies = getattr(connection, "cookies", None) or {}
+    token = cookies.get(AUTH_COOKIE_NAME)
+
+    if not token:
+        return None
+
+    decoded = _verify_token(token)
+    if not decoded:
+        return None
+
+    user = user_db.get_user_by_id(decoded["userId"])
+    if not user:
+        return None
+    return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
+
+
 async def authenticate_token(
     request: Request,
     response: Response,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ):
     """FastAPI dependency that mimics Express authenticateToken middleware."""
 
@@ -72,12 +128,7 @@ async def authenticate_token(
         request.state.user = user
         return user
 
-    # Extract token from Bearer header or query param
-    token = None
-    if credentials:
-        token = credentials.credentials
-    if not token:
-        token = request.query_params.get("token")
+    token = extract_auth_token(request)
     if not token:
         raise HTTPException(401, "Access denied. No token provided.")
 
@@ -97,31 +148,10 @@ async def authenticate_token(
         half_life = (exp - iat) / 2
         if now > iat + half_life:
             new_token = generate_token(user)
-            response.headers["X-Refreshed-Token"] = new_token
+            set_auth_cookie(response, new_token, request)
 
     request.state.user = user
     return user
-
-
-def authenticate_websocket(token: Optional[str]) -> Optional[dict]:
-    """WebSocket authentication — returns user dict or None."""
-    if IS_PLATFORM:
-        user = user_db.get_first_user()
-        if user:
-            return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
-        return None
-
-    if not token:
-        return None
-
-    decoded = _verify_token(token)
-    if not decoded:
-        return None
-
-    user = user_db.get_user_by_id(decoded["userId"])
-    if not user:
-        return None
-    return {"userId": user["id"], "username": user["username"], "role": user.get("role", "user")}
 
 
 def require_admin(request: Request) -> dict:

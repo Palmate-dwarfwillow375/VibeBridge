@@ -119,6 +119,18 @@
       "alphabetical": "按字母顺序",
       "recentActivity": "最近活动"
     },
+    "shellRetention": {
+      "title": "终端上下文保留",
+      "description": "在切换节点或项目时保留最近的终端上下文。",
+      "maxSessions": {
+        "label": "最大保留终端数",
+        "description": "每个用户最多保留多少个已断开的终端上下文。0 表示禁用保留，最大 10。"
+      },
+      "minutes": {
+        "label": "保留时长（分钟）",
+        "description": "已断开终端最多保留多久以便重新接回。0 表示禁用保留，最大 60 分钟。"
+      }
+    },
     "codeEditor": {
       "title": "代码编辑器",
       "theme": {

@@ -15,13 +15,8 @@ import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
 import { resetUserScopedStorageHydration } from '../../../utils/userScopedStorage';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 const readStoredUserId = (): string => localStorage.getItem(AUTH_USER_ID_STORAGE_KEY) || '';
-
-const persistToken = (token: string) => {
-  localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
-};
+const COOKIE_SESSION_TOKEN = 'cookie-session';
 
 const persistUserId = (user: AuthUser) => {
   if (user.id === undefined || user.id === null) {
@@ -72,16 +67,15 @@ export function useAuth(): AuthContextValue {
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [token, setToken] = useState<string | null>(() => readStoredToken());
+  const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
+  const setSession = useCallback((nextUser: AuthUser) => {
     setUser((currentUser) => (usersMatch(currentUser, nextUser) ? currentUser : nextUser));
-    setToken(nextToken);
-    persistToken(nextToken);
+    setToken(COOKIE_SESSION_TOKEN);
     persistUserId(nextUser);
   }, []);
 
@@ -133,10 +127,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       setNeedsSetup(false);
 
-      if (!token) {
-        return;
-      }
-
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
         clearSession();
@@ -150,6 +140,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
 
       setUser((currentUser) => (usersMatch(currentUser, userPayload.user) ? currentUser : userPayload.user));
+      setToken(COOKIE_SESSION_TOKEN);
       persistUserId(userPayload.user);
     } catch (caughtError) {
       console.error('[Auth] Auth status check failed:', caughtError);
@@ -157,7 +148,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [clearSession, token]);
+  }, [clearSession]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
@@ -179,13 +170,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const response = await api.auth.login(username, password);
         const payload = await parseJsonSafely<AuthSessionPayload>(response);
 
-        if (!response.ok || !payload?.token || !payload.user) {
+        if (!response.ok || !payload?.user) {
           const message = resolveApiErrorMessage(payload, AUTH_ERROR_MESSAGES.loginFailed);
           setError(message);
           return { success: false, error: message };
         }
 
-        setSession(payload.user, payload.token);
+        setSession(payload.user);
         setNeedsSetup(false);
         return { success: true };
       } catch (caughtError) {
@@ -210,8 +201,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
           return { success: false, error: message };
         }
 
-        if (payload.token) {
-          setSession(payload.user, payload.token);
+        if (!payload.pendingApproval) {
+          setSession(payload.user);
           setNeedsSetup(false);
           return { success: true, message: payload.message || undefined };
         }
@@ -233,15 +224,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
   );
 
   const logout = useCallback(() => {
-    const tokenToInvalidate = token;
     clearSession();
-
-    if (tokenToInvalidate) {
-      void api.auth.logout().catch((caughtError: unknown) => {
-        console.error('Logout endpoint error:', caughtError);
-      });
-    }
-  }, [clearSession, token]);
+    void api.auth.logout().catch((caughtError: unknown) => {
+      console.error('Logout endpoint error:', caughtError);
+    });
+  }, [clearSession]);
 
   const contextValue = useMemo<AuthContextValue>(
     () => ({

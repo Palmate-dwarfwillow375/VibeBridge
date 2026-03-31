@@ -85,20 +85,15 @@ const flushPendingUpdates = async () => {
     return;
   }
 
-  const token = originalGetItem.call(window.localStorage, AUTH_TOKEN_STORAGE_KEY);
   const body = Object.fromEntries(pendingUpdates);
   clearPendingUpdates();
-
-  if (!token) {
-    return;
-  }
 
   try {
     await fetch(prefixUrl('/api/account/preferences'), {
       method: 'PUT',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ settings: body }),
     });

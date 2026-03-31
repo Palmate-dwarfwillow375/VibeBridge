@@ -68,17 +68,11 @@ const withNodeHeader = (options = {}, nodeId = null) => {
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
-  const token = localStorage.getItem('auth-token');
-
   const defaultHeaders = {};
 
   // Only set Content-Type for non-FormData requests
   if (!(options.body instanceof FormData)) {
     defaultHeaders['Content-Type'] = 'application/json';
-  }
-
-  if (!IS_PLATFORM && token) {
-    defaultHeaders['Authorization'] = `Bearer ${token}`;
   }
 
   // Multi-node mode: inject X-Node-Id header for all /api/* requests (except /api/auth and /api/nodes)
@@ -89,16 +83,11 @@ export const authenticatedFetch = (url, options = {}) => {
 
   return fetch(prefixUrl(url), {
     ...options,
+    credentials: 'same-origin',
     headers: {
       ...defaultHeaders,
       ...options.headers,
     },
-  }).then((response) => {
-    const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (refreshedToken) {
-      localStorage.setItem('auth-token', refreshedToken);
-    }
-    return response;
   });
 };
 
@@ -106,14 +95,16 @@ export const authenticatedFetch = (url, options = {}) => {
 export const api = {
   // Auth endpoints (no token required)
   auth: {
-    status: () => fetch(prefixUrl('/api/auth/status')),
+    status: () => fetch(prefixUrl('/api/auth/status'), { credentials: 'same-origin' }),
     login: (username, password) => fetch(prefixUrl('/api/auth/login'), {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
     register: (username, password) => fetch(prefixUrl('/api/auth/register'), {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
@@ -171,9 +162,7 @@ export const api = {
       method: 'DELETE',
     }),
   searchConversationsUrl: (query, limit = 50) => {
-    const token = localStorage.getItem('auth-token');
     const params = new URLSearchParams({ q: query, limit: String(limit) });
-    if (token) params.set('token', token);
     return `/api/search/conversations?${params.toString()}`;
   },
   /**

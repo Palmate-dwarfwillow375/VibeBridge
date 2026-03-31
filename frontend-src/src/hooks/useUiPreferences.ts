@@ -7,6 +7,8 @@ type UiPreferences = {
   autoScrollToBottom: boolean;
   sendByCtrlEnter: boolean;
   sidebarVisible: boolean;
+  shellRetentionMinutes: number;
+  shellMaxRetainedSessions: number;
 };
 
 type UiPreferenceKey = keyof UiPreferences;
@@ -39,11 +41,17 @@ const DEFAULTS: UiPreferences = {
   autoScrollToBottom: true,
   sendByCtrlEnter: false,
   sidebarVisible: true,
+  shellRetentionMinutes: 5,
+  shellMaxRetainedSessions: 5,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];
 const VALID_KEYS = new Set<UiPreferenceKey>(PREFERENCE_KEYS); // prevents unknown keys from being written
 const SYNC_EVENT = 'ui-preferences:sync';
+const NUMERIC_PREFERENCE_LIMITS = {
+  shellRetentionMinutes: { min: 0, max: 60 },
+  shellMaxRetainedSessions: { min: 0, max: 10 },
+} as const;
 
 type SyncEventDetail = {
   storageKey: string;
@@ -62,6 +70,27 @@ const parseBoolean = (value: unknown, fallback: boolean): boolean => {
   }
 
   return fallback;
+};
+
+const clampInteger = (value: unknown, fallback: number, min: number, max: number): number => {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+};
+
+const parsePreferenceValue = <K extends UiPreferenceKey>(
+  key: K,
+  value: unknown,
+  fallback: UiPreferences[K],
+): UiPreferences[K] => {
+  if (key in NUMERIC_PREFERENCE_LIMITS) {
+    const limits = NUMERIC_PREFERENCE_LIMITS[key as keyof typeof NUMERIC_PREFERENCE_LIMITS];
+    return clampInteger(value, fallback as number, limits.min, limits.max) as UiPreferences[K];
+  }
+
+  return parseBoolean(value, fallback as boolean) as UiPreferences[K];
 };
 
 const readLegacyPreference = (key: UiPreferenceKey, fallback: boolean): boolean => {
@@ -91,7 +120,7 @@ const readInitialPreferences = (storageKey: string): UiPreferences => {
         const parsedRecord = parsed as Record<string, unknown>;
 
         return PREFERENCE_KEYS.reduce((acc, key) => {
-          acc[key] = parseBoolean(parsedRecord[key], DEFAULTS[key]);
+          acc[key] = parsePreferenceValue(key, parsedRecord[key], DEFAULTS[key]);
           return acc;
         }, { ...DEFAULTS });
       }
@@ -101,7 +130,10 @@ const readInitialPreferences = (storageKey: string): UiPreferences => {
   }
 
   return PREFERENCE_KEYS.reduce((acc, key) => {
-    acc[key] = readLegacyPreference(key, DEFAULTS[key]);
+    acc[key] =
+      key in NUMERIC_PREFERENCE_LIMITS
+        ? DEFAULTS[key]
+        : readLegacyPreference(key, DEFAULTS[key] as boolean);
     return acc;
   }, { ...DEFAULTS });
 };
@@ -114,7 +146,7 @@ function reducer(state: UiPreferences, action: UiPreferencesAction): UiPreferenc
         return state;
       }
 
-      const nextValue = parseBoolean(value, state[key]);
+      const nextValue = parsePreferenceValue(key, value, state[key]);
       if (state[key] === nextValue) {
         return state;
       }
@@ -130,7 +162,7 @@ function reducer(state: UiPreferences, action: UiPreferencesAction): UiPreferenc
         if (!(key in updates)) continue;
 
         const value = updates[key];
-        const nextValue = parseBoolean(value, state[key]);
+        const nextValue = parsePreferenceValue(key, value, state[key]);
         if (nextState[key] !== nextValue) {
           nextState[key] = nextValue;
           changed = true;

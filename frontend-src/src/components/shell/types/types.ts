@@ -16,6 +16,9 @@ export type ShellInitMessage = {
   initialCommand: string | null | undefined;
   isPlainShell: boolean;
   nodeId?: string;
+  userId?: number;
+  shellRetentionMinutes?: number;
+  shellMaxRetainedSessions?: number;
 };
 
 export type ShellResizeMessage = {
